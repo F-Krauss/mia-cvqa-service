@@ -1,7 +1,5 @@
 import { CvqaService } from './cvqa.service';
 import type { Request } from 'express';
-import { AiUsageService } from './ai-usage.service';
-import { AiRemoteService } from './ai-remote.service';
 type VerifyWorkInstructionStepPayload = {
     goldenSampleUrl: string;
     validationImageUrl: string;
@@ -19,9 +17,7 @@ type VerifyWorkInstructionStepPayload = {
 };
 export declare class CvqaController {
     private readonly cvqaService;
-    private readonly aiUsageService;
-    private readonly aiRemoteService;
-    constructor(cvqaService: CvqaService, aiUsageService: AiUsageService, aiRemoteService: AiRemoteService);
+    constructor(cvqaService: CvqaService);
     verifyWorkInstructionStep(payload: VerifyWorkInstructionStepPayload, req: Request): Promise<any>;
 }
 export {};

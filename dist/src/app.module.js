@@ -10,17 +10,10 @@ exports.AppModule = void 0;
 const common_1 = require("@nestjs/common");
 const app_controller_1 = require("./app.controller");
 const app_service_1 = require("./app.service");
-const documents_module_1 = require("./documents/documents.module");
 const prisma_module_1 = require("./prisma/prisma.module");
 const auth_module_1 = require("./auth/auth.module");
-const tenant_middleware_1 = require("./common/middleware/tenant.middleware");
-const history_module_1 = require("./history/history.module");
 const cvqa_module_1 = require("./cvqa/cvqa.module");
-const approvals_module_1 = require("./approvals/approvals.module");
 let AppModule = class AppModule {
-    configure(consumer) {
-        consumer.apply(tenant_middleware_1.TenantMiddleware).forRoutes('*');
-    }
 };
 exports.AppModule = AppModule;
 exports.AppModule = AppModule = __decorate([
@@ -28,10 +21,7 @@ exports.AppModule = AppModule = __decorate([
         imports: [
             prisma_module_1.PrismaModule,
             auth_module_1.AuthModule,
-            documents_module_1.DocumentsModule,
-            history_module_1.HistoryModule,
             cvqa_module_1.CvqaModule,
-            approvals_module_1.ApprovalsModule,
         ],
         controllers: [app_controller_1.AppController],
         providers: [app_service_1.AppService],

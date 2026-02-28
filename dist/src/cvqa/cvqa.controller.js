@@ -11,30 +11,20 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
-var _a;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CvqaController = void 0;
 const common_1 = require("@nestjs/common");
 const swagger_1 = require("@nestjs/swagger");
 const cvqa_service_1 = require("./cvqa.service");
 const jwt_auth_guard_1 = require("../auth/guards/jwt-auth.guard");
-const ai_usage_service_1 = require("./ai-usage.service");
-const ai_remote_service_1 = require("./ai-remote.service");
 let CvqaController = class CvqaController {
     cvqaService;
-    aiUsageService;
-    aiRemoteService;
-    constructor(cvqaService, aiUsageService, aiRemoteService) {
+    constructor(cvqaService) {
         this.cvqaService = cvqaService;
-        this.aiUsageService = aiUsageService;
-        this.aiRemoteService = aiRemoteService;
     }
     async verifyWorkInstructionStep(payload, req) {
         if (!payload?.goldenSampleUrl || !payload?.validationImageUrl) {
             throw new common_1.BadRequestException('goldenSampleUrl and validationImageUrl are required');
-        }
-        if (this.aiRemoteService.enabled) {
-            return this.aiRemoteService.forward(req, payload);
         }
         const user = req.user;
         const organizationId = req.organizationId || user?.organizationId;
@@ -55,7 +45,6 @@ __decorate([
 exports.CvqaController = CvqaController = __decorate([
     (0, common_1.Controller)('ai'),
     (0, common_1.UseGuards)(jwt_auth_guard_1.JwtAuthGuard),
-    __metadata("design:paramtypes", [typeof (_a = typeof cvqa_service_1.CvqaService !== "undefined" && cvqa_service_1.CvqaService) === "function" ? _a : Object, ai_usage_service_1.AiUsageService,
-        ai_remote_service_1.AiRemoteService])
+    __metadata("design:paramtypes", [cvqa_service_1.CvqaService])
 ], CvqaController);
 //# sourceMappingURL=cvqa.controller.js.map
