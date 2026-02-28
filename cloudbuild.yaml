@@ -1,39 +1,24 @@
 steps:
-  # 1. Build the container image
+  # Build the container image
   - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'build'
-      - '--no-cache'
-      - '-t'
-      - 'northamerica-south1-docker.pkg.dev/mia-test-ocr/cloud-run-source-deploy/mia-web-app/mia-ai-service:$COMMIT_SHA'
-      - '.'
-      - '-f'
-      - 'Dockerfile'
-    id: 'Build'
+    args: ['build', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/mia-cvqa-service:$COMMIT_SHA', '.']
 
-  # 2. Push the container image to Artifact Registry
+  # Push the container image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'push'
-      - 'northamerica-south1-docker.pkg.dev/mia-test-ocr/cloud-run-source-deploy/mia-web-app/mia-ai-service:$COMMIT_SHA'
-    id: 'Push'
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/mia-cvqa-service:$COMMIT_SHA']
 
-  # 3. Deploy container image to Cloud Run with necessary environment variables
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
-    entrypoint: 'gcloud'
+  # Deploy container image to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
     args:
       - 'run'
       - 'deploy'
-      - 'mia-ai-service'
-      - '--platform=managed'
-      - '--image=northamerica-south1-docker.pkg.dev/mia-test-ocr/cloud-run-source-deploy/mia-web-app/mia-ai-service:$COMMIT_SHA'
-      - '--region=northamerica-south1'
+      - 'mia-cvqa-service'
+      - '--image'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/mia-cvqa-service:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
       - '--allow-unauthenticated'
-      - '--quiet'
-    id: 'Deploy'
 
 images:
-  - 'northamerica-south1-docker.pkg.dev/mia-test-ocr/cloud-run-source-deploy/mia-web-app/mia-ai-service:$COMMIT_SHA'
-
-options:
-  logging: CLOUD_LOGGING_ONLY
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/mia-cvqa-service:$COMMIT_SHA'
