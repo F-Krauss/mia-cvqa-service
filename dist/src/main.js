@@ -11,7 +11,6 @@ const helmet_1 = __importDefault(require("helmet"));
 const compression_1 = __importDefault(require("compression"));
 const express_1 = require("express");
 const app_module_1 = require("./app.module");
-const prisma_exception_filter_1 = require("./common/filters/prisma-exception.filter");
 const error_logging_interceptor_1 = require("./common/interceptors/error-logging.interceptor");
 const google_auth_library_1 = require("google-auth-library");
 const envRoot = process.cwd();
@@ -54,7 +53,6 @@ async function bootstrap() {
     await logAdcIdentity();
     const app = await core_1.NestFactory.create(app_module_1.AppModule);
     app.enableShutdownHooks();
-    app.useGlobalFilters(new prisma_exception_filter_1.PrismaExceptionFilter());
     app.useGlobalInterceptors(new error_logging_interceptor_1.ErrorLoggingInterceptor());
     const bodyLimit = process.env.REQUEST_BODY_LIMIT || '10mb';
     app.use((0, express_1.json)({ limit: bodyLimit }));

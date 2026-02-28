@@ -1,11 +1,9 @@
 import { Module } from '@nestjs/common';
-import { PrismaModule } from '../prisma/prisma.module';
 import { CvqaController } from './cvqa.controller';
 import { CvqaService } from './cvqa.service';
 import { CacheService } from '../common/cache.service';
 
 @Module({
-  imports: [PrismaModule],
   controllers: [CvqaController],
   providers: [
     CvqaService,

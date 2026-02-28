@@ -6,7 +6,6 @@ import helmet from 'helmet';
 import compression from 'compression';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
-import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';
 import { ErrorLoggingInterceptor } from './common/interceptors/error-logging.interceptor';
 import { GoogleAuth } from 'google-auth-library';
 
@@ -42,7 +41,7 @@ async function logAdcIdentity() {
     });
     const creds = await auth.getCredentials();
     if (creds?.client_email) {
-       console.log(`[GCP Auth] ADC client_email: ${creds.client_email}`);
+      console.log(`[GCP Auth] ADC client_email: ${creds.client_email}`);
     } else {
       console.warn('[GCP Auth] ADC client_email not available.');
     }
@@ -55,7 +54,6 @@ async function bootstrap() {
   await logAdcIdentity();
   const app = await NestFactory.create(AppModule);
   app.enableShutdownHooks();
-  app.useGlobalFilters(new PrismaExceptionFilter());
   app.useGlobalInterceptors(new ErrorLoggingInterceptor());
   const bodyLimit = process.env.REQUEST_BODY_LIMIT || '10mb';
   app.use(json({ limit: bodyLimit }));
@@ -78,9 +76,9 @@ async function bootstrap() {
   const allowedOriginsEnv = process.env.ALLOWED_ORIGINS;
   const allowedOrigins = allowedOriginsEnv
     ? allowedOriginsEnv
-        .split(',')
-        .map((origin) => origin.trim())
-        .filter(Boolean)
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean)
     : [];
 
   if (!allowedOrigins.length && isProduction) {
@@ -92,13 +90,13 @@ async function bootstrap() {
   const corsOrigins = allowedOrigins.length
     ? allowedOrigins
     : [
-        'http://localhost:5173',
-        'http://localhost:3000',
-        'http://localhost:3001',
-      ];
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'http://localhost:3001',
+    ];
 
   if (!isProduction) {
-     console.log('[CORS] Allowed origins:', corsOrigins);
+    console.log('[CORS] Allowed origins:', corsOrigins);
   }
 
   const hasWildcard = corsOrigins.some((origin) => origin.includes('*'));
@@ -161,9 +159,9 @@ async function bootstrap() {
   // Global error handling
   const PORT = Number(process.env.PORT) || 8080;
   await app.listen(PORT, '0.0.0.0', () => {
-     console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🚀 Server running on port ${PORT}`);
     if (enableSwagger) {
-       console.log(`📚 API docs available at http://localhost:${PORT}/api/docs`);
+      console.log(`📚 API docs available at http://localhost:${PORT}/api/docs`);
     }
   });
 }
