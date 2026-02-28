@@ -1,23 +1,17 @@
 import { CvqaService } from './cvqa.service';
-import type { Request } from 'express';
-type VerifyWorkInstructionStepPayload = {
-    goldenSampleUrl: string;
-    validationImageUrl: string;
-    rules?: Array<{
-        id: string;
-        description: string;
-        highlight?: {
-            x: number;
-            y: number;
-            w: number;
-            h: number;
-        };
-        color?: string;
-    }>;
-};
 export declare class CvqaController {
     private readonly cvqaService;
     constructor(cvqaService: CvqaService);
-    verifyWorkInstructionStep(payload: VerifyWorkInstructionStepPayload, req: Request): Promise<any>;
+    compareVisionQuality(files: {
+        manual?: Express.Multer.File[];
+        object_file?: Express.Multer.File[];
+        golden?: Express.Multer.File[];
+    }, paramsString: string, req: any): Promise<{
+        status: string;
+        summary: any;
+        issues: string[];
+        missing: string[];
+        confidence: any;
+        checks: any;
+    }>;
 }
-export {};

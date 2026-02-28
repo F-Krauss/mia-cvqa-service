@@ -17,31 +17,38 @@ const common_1 = require("@nestjs/common");
 const swagger_1 = require("@nestjs/swagger");
 const cvqa_service_1 = require("./cvqa.service");
 const jwt_auth_guard_1 = require("../auth/guards/jwt-auth.guard");
+const platform_express_1 = require("@nestjs/platform-express");
 let CvqaController = class CvqaController {
     cvqaService;
     constructor(cvqaService) {
         this.cvqaService = cvqaService;
     }
-    async verifyWorkInstructionStep(payload, req) {
-        if (!payload?.goldenSampleUrl || !payload?.validationImageUrl) {
-            throw new common_1.BadRequestException('goldenSampleUrl and validationImageUrl are required');
+    async compareVisionQuality(files, paramsString, req) {
+        if (!files?.object_file?.[0] && !files?.manual?.[0]) {
+            throw new common_1.BadRequestException('At least object_file or manual is required');
         }
         const user = req.user;
         const organizationId = req.organizationId || user?.organizationId;
-        return this.cvqaService.verifyWorkInstructionStep(payload, user, organizationId);
+        return this.cvqaService.compareVisionQuality(files, paramsString, user, organizationId);
     }
 };
 exports.CvqaController = CvqaController;
 __decorate([
-    (0, common_1.Post)('verify-step'),
-    (0, swagger_1.ApiOperation)({ summary: 'Verifies a work instruction step using Computer Vision QA' }),
-    (0, swagger_1.ApiResponse)({ status: 200, description: 'Step verification complete' }),
-    __param(0, (0, common_1.Body)()),
-    __param(1, (0, common_1.Req)()),
+    (0, common_1.Post)('vision/compare'),
+    (0, swagger_1.ApiOperation)({ summary: 'Compare vision quality using manual, object, and golden files' }),
+    (0, swagger_1.ApiResponse)({ status: 200, description: 'Comparison complete' }),
+    (0, common_1.UseInterceptors)((0, platform_express_1.FileFieldsInterceptor)([
+        { name: 'manual', maxCount: 1 },
+        { name: 'object_file', maxCount: 1 },
+        { name: 'golden', maxCount: 1 },
+    ])),
+    __param(0, (0, common_1.UploadedFiles)()),
+    __param(1, (0, common_1.Body)('params')),
+    __param(2, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:paramtypes", [Object, String, Object]),
     __metadata("design:returntype", Promise)
-], CvqaController.prototype, "verifyWorkInstructionStep", null);
+], CvqaController.prototype, "compareVisionQuality", null);
 exports.CvqaController = CvqaController = __decorate([
     (0, common_1.Controller)('ai'),
     (0, common_1.UseGuards)(jwt_auth_guard_1.JwtAuthGuard),

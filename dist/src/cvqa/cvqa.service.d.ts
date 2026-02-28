@@ -3,19 +3,16 @@ export declare class CvqaService {
     private readonly model;
     constructor();
     private generateContentWithRetry;
-    verifyWorkInstructionStep(payload: {
-        goldenSampleUrl: string;
-        validationImageUrl: string;
-        rules?: Array<{
-            id: string;
-            description: string;
-            highlight?: {
-                x: number;
-                y: number;
-                w: number;
-                h: number;
-            };
-            color?: string;
-        }>;
-    }, user?: any, organizationId?: string): Promise<any>;
+    compareVisionQuality(files: {
+        manual?: Express.Multer.File[];
+        object_file?: Express.Multer.File[];
+        golden?: Express.Multer.File[];
+    }, paramsString: string, user?: any, organizationId?: string): Promise<{
+        status: string;
+        summary: any;
+        issues: string[];
+        missing: string[];
+        confidence: any;
+        checks: any;
+    }>;
 }

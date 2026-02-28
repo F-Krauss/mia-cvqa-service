@@ -51,76 +51,71 @@ let CvqaService = class CvqaService {
             },
         });
     }
-    async verifyWorkInstructionStep(payload, user, organizationId) {
+    async compareVisionQuality(files, paramsString, user, organizationId) {
         if (!this.model) {
             throw new common_1.BadRequestException('Vertex AI is not configured.');
         }
         try {
-            const fetchImageBase64 = async (url) => {
-                if (url.startsWith('data:image/')) {
-                    const mimeType = url.substring('data:'.length, url.indexOf(';base64,'));
-                    const data = url.substring(url.indexOf(';base64,') + 8);
-                    return { mimeType, data };
+            let params = {};
+            if (paramsString) {
+                try {
+                    params = JSON.parse(paramsString);
                 }
-                const response = await fetch(url);
-                if (!response.ok) {
-                    throw new Error(`Failed to fetch image: ${response.statusText}`);
+                catch (e) {
+                    throw new common_1.BadRequestException('Invalid params JSON');
                 }
-                const arrayBuffer = await response.arrayBuffer();
-                const buffer = Buffer.from(arrayBuffer);
-                const mimeType = response.headers.get('content-type') || 'image/jpeg';
-                return { mimeType, data: buffer.toString('base64') };
+            }
+            const buildQualityPrompt = (p) => {
+                const specName = p.specName || "manual";
+                const specVersion = p.specVersion || "";
+                const specVersionText = specVersion ? ` (version ${specVersion})` : "";
+                const rules = p.rules || [];
+                const rulesText = rules.length > 0 ? rules.map((r) => `- ${r}`).join('\n') : "- Usa el manual/especificación como referencia principal.";
+                const tolerances = p.tolerances || {};
+                const alignmentMm = tolerances.alignmentMm;
+                const dimensionPct = tolerances.dimensionPercent;
+                const gapMm = tolerances.gapMm;
+                const confidenceThreshold = p.confidenceThreshold;
+                const extraNotes = p.notes || "";
+                const checks = p.checks || {};
+                const checksText = Object.keys(checks).filter(k => checks[k]).join(', ') || "validacion general";
+                const toleranceLines = [];
+                if (alignmentMm !== undefined && alignmentMm !== null)
+                    toleranceLines.push(`- Tolerancia de alineacion: ${alignmentMm} mm.`);
+                if (dimensionPct !== undefined && dimensionPct !== null)
+                    toleranceLines.push(`- Tolerancia dimensional: ${dimensionPct} %.`);
+                if (gapMm !== undefined && gapMm !== null)
+                    toleranceLines.push(`- Tolerancia de separacion/holgura: ${gapMm} mm.`);
+                if (confidenceThreshold !== undefined && confidenceThreshold !== null)
+                    toleranceLines.push(`- Umbral minimo de confianza: ${confidenceThreshold}.`);
+                const toleranceText = toleranceLines.length > 0 ? toleranceLines.join('\n') : "- Usa tolerancias razonables segun el manual.";
+                const notesText = extraNotes ? `\nNotas adicionales del operador:\n${extraNotes}\n` : "";
+                return `Eres un inspector de control de calidad industrial. El primer archivo es el manual/especificacion del producto${specVersionText}. El segundo archivo es la pieza a inspeccionar. Si hay un tercer archivo, es un golden sample (pieza correcta). Compara la pieza con el manual y/o golden sample.\n\nManual de referencia: ${specName}${specVersionText}\nReglas del manual:\n${rulesText}\n\nChecks solicitados: ${checksText}.\nTolerancias:\n${toleranceText}\n${notesText}Responde SOLO JSON valido con:\n{ "status": "PASS|FAIL|REVIEW", "summary": "texto corto", "issues": ["lista"], "missing": ["lista"], "confidence": 0.0-1.0, "checks": {"check": true} }\nSi hay dudas o el manual no es claro, usa status REVIEW.`;
             };
-            const [goldenImage, validationImage] = await Promise.all([
-                fetchImageBase64(payload.goldenSampleUrl),
-                fetchImageBase64(payload.validationImageUrl),
-            ]);
-            const rulesText = payload.rules?.length
-                ? payload.rules.map((rule, idx) => {
-                    const colorText = rule.color ? ` (color ${rule.color})` : '';
-                    const coordsText = rule.highlight
-                        ? ` en las coordenadas relativas x:${Math.round(rule.highlight.x)}%, y:${Math.round(rule.highlight.y)}%, ancho:${Math.round(rule.highlight.w)}%, alto:${Math.round(rule.highlight.h)}%`
-                        : '';
-                    return `Regla ${idx + 1}${colorText}${coordsText}: "${rule.description}"`;
-                }).join('\n')
-                : 'Verifica que la acción se haya completado correctamente según la muestra ideal.';
-            const promptText = `Eres un inspector experto de Control de Calidad (QA) visual en una fábrica industrial.
-Se te proporcionan dos imágenes:
-1. Una imagen "Muestra Ideal" (Golden Sample) cargada primero.
-2. Una imagen "Validación" tomada por un operario cargada después.
-
-Tu trabajo es verificar si la imagen de Validación cumple con los criterios descritos por el supervisor, basándote en la Muestra Ideal.
-Debes ser robusto a cambios en el ángulo de la cámara, la iluminación y la escala.
-
-Criterios y áreas de inspección:
-${rulesText}
-
-Evalúa la imagen de Validación y responde ÚNICAMENTE en el siguiente formato JSON estricto:
-{
-  "status": "VALIDATED" | "FAILED" | "UNCLEAR",
-  "message": "Tu mensaje de retroalimentación en español para el operario (ej. 'La foto muestra claramente el componente ensamblado' o 'Falta el tornillo en la esquina superior')",
-  "correction_advice": "Solo si es UNCLEAR, explica cómo el operario puede tomar una mejor foto (ej. 'Por favor toma la foto desde arriba con mejor iluminación'). Si no es UNCLEAR, devuelve un string vacío."
-}`;
+            const promptText = params.prompt && typeof params.prompt === 'string' && params.prompt.trim() !== ''
+                ? params.prompt
+                : buildQualityPrompt(params);
+            const parts = [];
+            const addFilePart = (fileObj) => {
+                if (fileObj?.[0]) {
+                    parts.push({
+                        inlineData: {
+                            mimeType: fileObj[0].mimetype || 'image/jpeg',
+                            data: fileObj[0].buffer.toString('base64'),
+                        }
+                    });
+                }
+            };
+            addFilePart(files.manual);
+            addFilePart(files.object_file);
+            addFilePart(files.golden);
+            parts.push({ text: promptText });
             const request = {
                 model: MODEL_ID,
                 contents: [
                     {
                         role: 'user',
-                        parts: [
-                            { text: promptText },
-                            {
-                                inlineData: {
-                                    mimeType: goldenImage.mimeType,
-                                    data: goldenImage.data,
-                                },
-                            },
-                            {
-                                inlineData: {
-                                    mimeType: validationImage.mimeType,
-                                    data: validationImage.data,
-                                },
-                            },
-                        ],
+                        parts,
                     },
                 ],
                 generationConfig: {
@@ -137,12 +132,31 @@ Evalúa la imagen de Validación y responde ÚNICAMENTE en el siguiente formato 
             catch (e) {
                 console.error('[CVQA] QA Vision parse error:', responseText);
                 jsonResult = {
-                    status: 'UNCLEAR',
-                    message: 'Error procesando la respuesta de la IA.',
-                    correction_advice: 'Por favor intenta de nuevo.',
+                    status: 'REVIEW',
+                    summary: 'Error procesando la respuesta de la IA.',
+                    issues: ['Error interno al leer JSON'],
                 };
             }
-            return jsonResult;
+            let statusRaw = jsonResult.status || jsonResult.result || jsonResult.decision || 'REVIEW';
+            let status = String(statusRaw).toUpperCase();
+            if (!['PASS', 'FAIL', 'REVIEW'].includes(status)) {
+                status = 'REVIEW';
+            }
+            const listify = (v) => {
+                if (!v)
+                    return [];
+                if (Array.isArray(v))
+                    return v.map(String);
+                return [String(v)];
+            };
+            return {
+                status,
+                summary: jsonResult.summary || jsonResult.notes || jsonResult.reason,
+                issues: listify(jsonResult.issues || jsonResult.defects || jsonResult.findings),
+                missing: listify(jsonResult.missing || jsonResult.missing_parts || jsonResult.missingParts),
+                confidence: typeof jsonResult.confidence === 'number' ? jsonResult.confidence : (typeof jsonResult.score === 'number' ? jsonResult.score : null),
+                checks: jsonResult.checks || null,
+            };
         }
         catch (error) {
             console.error('[CVQA] QA Vision Error:', error.message || error);
