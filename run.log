@@ -1,0 +1,27 @@
+[dotenv@17.2.3] injecting env (24) from .env -- tip: ⚙️  suppress all logs with { quiet: true }
+[dotenv@17.2.3] injecting env (19) from .env.local -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+[GCP Auth] ADC client_email not available.
+[32m[Nest] 7665  - [39m02/21/2026, 1:49:35 PM [32m    LOG[39m [38;5;3m[NestFactory] [39m[32mStarting Nest application...[39m
+[31m[Nest] 7665  - [39m02/21/2026, 1:49:35 PM [31m  ERROR[39m [38;5;3m[ExceptionHandler] [39mUnknownExportException [Error]: Nest cannot export a provider/module that is not a part of the currently processed module (AiModule). Please verify whether the exported VectorStoreService is available in this particular context.
+
+Possible Solutions:
+- Is VectorStoreService part of the relevant providers/imports within AiModule?
+
+For more common dependency resolution issues, see: https://docs.nestjs.com/faq/common-errors
+
+    at Module.validateExportedProvider [90m(/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mnode_modules/[4m@nestjs/core[24m/injector/module.js:316:19[90m)[39m
+    at addExportedUnit [90m(/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mnode_modules/[4m@nestjs/core[24m/injector/module.js:284:67[90m)[39m
+    at Module.addExportedProviderOrModule [90m(/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mnode_modules/[4m@nestjs/core[24m/injector/module.js:295:9[90m)[39m
+    at NestContainer.addExportedProviderOrModule [90m(/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mnode_modules/[4m@nestjs/core[24m/injector/container.js:182:19[90m)[39m
+    at DependenciesScanner.insertExportedProviderOrModule [90m(/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mnode_modules/[4m@nestjs/core[24m/scanner.js:293:24[90m)[39m
+    at [90m/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mnode_modules/[4m@nestjs/core[24m/scanner.js:152:50
+    at Array.forEach (<anonymous>)
+    at DependenciesScanner.reflectExports [90m(/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mnode_modules/[4m@nestjs/core[24m/scanner.js:152:17[90m)[39m
+    at DependenciesScanner.scanModulesForDependencies [90m(/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mnode_modules/[4m@nestjs/core[24m/scanner.js:105:18[90m)[39m
+[90m    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)[39m
+    at async DependenciesScanner.scan [90m(/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mnode_modules/[4m@nestjs/core[24m/scanner.js:32:9[90m)[39m
+    at async [90m/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mnode_modules/[4m@nestjs/core[24m/nest-factory.js:111:17
+    at async ExceptionsZone.asyncRun [90m(/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mnode_modules/[4m@nestjs/core[24m/errors/exceptions-zone.js:22:13[90m)[39m
+    at async NestFactoryStatic.initialize [90m(/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mnode_modules/[4m@nestjs/core[24m/nest-factory.js:110:13[90m)[39m
+    at async NestFactoryStatic.create [90m(/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mnode_modules/[4m@nestjs/core[24m/nest-factory.js:43:9[90m)[39m
+    at async bootstrap [90m(/Users/fukunugget/dev/MIA-web-app copy/mia-ai-service/[39mdist/src/main.js:55:17[90m)[39m

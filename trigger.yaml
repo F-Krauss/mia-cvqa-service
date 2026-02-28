@@ -1,0 +1,25 @@
+filename: cloudbuild.yaml
+createTime: '2026-01-22T20:47:01.621149599Z'
+description: Build and deploy to Cloud Run service mia-ai-service on push to "^OCR-test$"
+github:
+  name: mia-ai-service
+  owner: F-Krauss
+  push:
+    branch: ^OCR-test$
+id: 980047ea-e70b-41e6-8cbe-a0ac8db7bcdc
+includeBuildLogs: INCLUDE_BUILD_LOGS_WITH_STATUS
+name: rmgpgab-mia-ai-service-northamerica-south1-F-Krauss-mia-ai-ssab
+resourceName: projects/mia-test-ocr/locations/global/triggers/980047ea-e70b-41e6-8cbe-a0ac8db7bcdc
+serviceAccount: projects/mia-test-ocr/serviceAccounts/452613482562-compute@developer.gserviceaccount.com
+substitutions:
+  _AR_HOSTNAME: northamerica-south1-docker.pkg.dev
+  _AR_PROJECT_ID: mia-test-ocr
+  _AR_REPOSITORY: cloud-run-source-deploy
+  _DEPLOY_REGION: northamerica-south1
+  _PLATFORM: managed
+  _SERVICE_NAME: mia-ai-service
+  _TRIGGER_ID: 980047ea-e70b-41e6-8cbe-a0ac8db7bcdc
+tags:
+- gcp-cloud-build-deploy-cloud-run
+- gcp-cloud-build-deploy-cloud-run-managed
+- mia-ai-service

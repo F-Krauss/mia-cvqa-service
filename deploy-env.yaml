@@ -1,0 +1,10 @@
+NODE_ENV: production
+DATABASE_SCHEMA: "mia-test"
+DATABASE_URL: "postgresql://postgres.ajxahzbpuczxpjfgwqpr:vuvkis-pUbse7-siptan@aws-0-us-west-2.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=no-verify&schema=mia-test"
+DATABASE_URL_DIRECT: "postgresql://postgres.ajxahzbpuczxpjfgwqpr:vuvkis-pUbse7-siptan@aws-0-us-west-2.pooler.supabase.com:5432/postgres?sslmode=no-verify&schema=mia-test"
+DATABASE_SSL_REJECT_UNAUTHORIZED: "false"
+DATABASE_POOL_MAX: "3"
+JWT_SECRET: "a-very-secret-jwt-secret"
+VERTEX_PROJECT_ID: "mia-test-ocr"
+ALLOWED_ORIGINS: "https://t-efficiency.com,https://mia-web-appgit-7915935-96391.web.app,https://mia-backend-service-452613482562.northamerica-south1.run.app"
+PRISMA_ENABLE_REQUEST_CONTEXT: "false"
