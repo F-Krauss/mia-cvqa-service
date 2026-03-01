@@ -70,7 +70,13 @@ let CvqaService = class CvqaService {
                 const specVersion = p.specVersion || "";
                 const specVersionText = specVersion ? ` (version ${specVersion})` : "";
                 const rules = p.rules || [];
-                const rulesText = rules.length > 0 ? rules.map((r) => `- ${r}`).join('\n') : "- Usa el manual/especificación como referencia principal.";
+                const rulesText = rules.length > 0
+                    ? rules.map((r) => {
+                        if (typeof r === 'string')
+                            return `- ${r}`;
+                        return `- ${r.description || 'Regla'} ${r.color ? `(Color de zona a revisar: ${r.color})` : ''}`;
+                    }).join('\n')
+                    : "- Usa el manual/especificación como referencia principal.";
                 const tolerances = p.tolerances || {};
                 const alignmentMm = tolerances.alignmentMm;
                 const dimensionPct = tolerances.dimensionPercent;

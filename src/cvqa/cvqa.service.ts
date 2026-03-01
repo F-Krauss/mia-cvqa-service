@@ -97,8 +97,13 @@ export class CvqaService {
         const specVersion = p.specVersion || "";
         const specVersionText = specVersion ? ` (version ${specVersion})` : "";
 
-        const rules: string[] = p.rules || [];
-        const rulesText = rules.length > 0 ? rules.map((r: string) => `- ${r}`).join('\n') : "- Usa el manual/especificación como referencia principal.";
+        const rules: any[] = p.rules || [];
+        const rulesText = rules.length > 0
+          ? rules.map((r: any) => {
+            if (typeof r === 'string') return `- ${r}`;
+            return `- ${r.description || 'Regla'} ${r.color ? `(Color de zona a revisar: ${r.color})` : ''}`;
+          }).join('\n')
+          : "- Usa el manual/especificación como referencia principal.";
 
         const tolerances = p.tolerances || {};
         const alignmentMm = tolerances.alignmentMm;
