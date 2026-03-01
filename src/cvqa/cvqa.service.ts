@@ -10,7 +10,7 @@ import {
 import { resolveVertexLocation } from '../common/vertex-location';
 import { withVertexRetry } from '../common/vertex-retry';
 
-const MODEL_ID = process.env.AI_MODEL_ID || process.env.VERTEX_MODEL_ID || 'gemini-1.5-pro-001';
+const MODEL_ID = process.env.AI_MODEL_ID || process.env.VERTEX_MODEL_ID || 'gemini-2.5-flash';
 
 @Injectable()
 export class CvqaService {
