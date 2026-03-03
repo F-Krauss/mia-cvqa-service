@@ -14,4 +14,8 @@ export declare class CvqaController {
         confidence: any;
         checks: any;
     }>;
+    validateRulesLogic(rules: any[]): Promise<{
+        status: "valid" | "invalid";
+        message?: string;
+    }>;
 }

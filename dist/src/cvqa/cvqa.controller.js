@@ -31,6 +31,12 @@ let CvqaController = class CvqaController {
         const organizationId = req.organizationId || user?.organizationId;
         return this.cvqaService.compareVisionQuality(files, paramsString, user, organizationId);
     }
+    async validateRulesLogic(rules) {
+        if (!rules || !Array.isArray(rules)) {
+            throw new common_1.BadRequestException('Rules payload must be an array');
+        }
+        return this.cvqaService.validateRulesLogic(rules);
+    }
 };
 exports.CvqaController = CvqaController;
 __decorate([
@@ -39,7 +45,7 @@ __decorate([
     (0, swagger_1.ApiResponse)({ status: 200, description: 'Comparison complete' }),
     (0, common_1.UseInterceptors)((0, platform_express_1.FileFieldsInterceptor)([
         { name: 'manual', maxCount: 1 },
-        { name: 'object_file', maxCount: 1 },
+        { name: 'object_file', maxCount: 4 },
         { name: 'golden', maxCount: 1 },
     ])),
     __param(0, (0, common_1.UploadedFiles)()),
@@ -49,6 +55,15 @@ __decorate([
     __metadata("design:paramtypes", [Object, String, Object]),
     __metadata("design:returntype", Promise)
 ], CvqaController.prototype, "compareVisionQuality", null);
+__decorate([
+    (0, common_1.Post)('vision/validate-rules'),
+    (0, swagger_1.ApiOperation)({ summary: 'Pre-validate physical and semantic logic of AI visual rules' }),
+    (0, swagger_1.ApiResponse)({ status: 200, description: 'Rules validation complete' }),
+    __param(0, (0, common_1.Body)('rules')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Array]),
+    __metadata("design:returntype", Promise)
+], CvqaController.prototype, "validateRulesLogic", null);
 exports.CvqaController = CvqaController = __decorate([
     (0, common_1.Controller)('ai'),
     (0, common_1.UseGuards)(jwt_auth_guard_1.JwtAuthGuard),

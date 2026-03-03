@@ -14,7 +14,7 @@ const common_1 = require("@nestjs/common");
 const vertexai_1 = require("@google-cloud/vertexai");
 const vertex_location_1 = require("../common/vertex-location");
 const vertex_retry_1 = require("../common/vertex-retry");
-const MODEL_ID = process.env.AI_MODEL_ID || process.env.VERTEX_MODEL_ID || 'gemini-1.5-flash';
+const MODEL_ID = process.env.AI_MODEL_ID || process.env.VERTEX_MODEL_ID || 'gemini-2.5-flash';
 let CvqaService = class CvqaService {
     vertexAI = null;
     model = null;
@@ -96,26 +96,38 @@ let CvqaService = class CvqaService {
                     toleranceLines.push(`- Umbral minimo de confianza: ${confidenceThreshold}.`);
                 const toleranceText = toleranceLines.length > 0 ? toleranceLines.join('\n') : "- Usa tolerancias razonables segun el manual.";
                 const notesText = extraNotes ? `\nNotas adicionales del operador:\n${extraNotes}\n` : "";
-                return `Eres un inspector de control de calidad industrial. El primer archivo es el manual/especificacion del producto${specVersionText}. El segundo archivo es la pieza a inspeccionar. Si hay un tercer archivo, es un golden sample (pieza correcta). Compara la pieza con el manual y/o golden sample.\n\nManual de referencia: ${specName}${specVersionText}\nReglas del manual:\n${rulesText}\n\nChecks solicitados: ${checksText}.\nTolerancias:\n${toleranceText}\n${notesText}Responde SOLO JSON valido con:\n{ "status": "PASS|FAIL|REVIEW", "summary": "texto corto", "issues": ["lista"], "missing": ["lista"], "confidence": 0.0-1.0, "checks": {"check": true} }\nSi hay dudas o el manual no es claro, usa status REVIEW.`;
+                const pastSteps = p.pastSteps || [];
+                const pastStepsText = pastSteps.length > 0
+                    ? `\nContexto de pasos previos (para referencia de estado histórico):\n` + pastSteps.map((s, idx) => {
+                        return `Paso previo ${idx + 1}: ${s.title}\nDescripción: ${s.description}\ntiene foto: ${s.hasPhoto ? 'Sí' : 'No'}`;
+                    }).join('\n\n')
+                    : "";
+                return `Eres un inspector de control de calidad industrial. A continuación se te proporcionarán imágenes etiquetadas (Manual, Objeto real, Golden Sample según existan, y posiblemente fotos de los pasos previos como contexto histórico). Compara la pieza a inspeccionar con el manual y/o golden sample.\n\nManual de referencia: ${specName}${specVersionText}\nReglas de inspección:\n${rulesText}\n${pastStepsText}\n\nChecks solicitados: ${checksText}.\nTolerancias:\n${toleranceText}\n${notesText}Responde SOLO JSON valido con:\n{ "status": "PASS|FAIL|REVIEW", "summary": "texto corto", "issues": ["lista"], "missing": ["lista"], "confidence": 0.0-1.0, "checks": {"check": true} }\nSi hay dudas o las reglas no son claras, usa status REVIEW.`;
             };
             const promptText = params.prompt && typeof params.prompt === 'string' && params.prompt.trim() !== ''
                 ? params.prompt
                 : buildQualityPrompt(params);
-            const parts = [];
-            const addFilePart = (fileObj) => {
-                if (fileObj?.[0]) {
+            const parts = [{ text: promptText }];
+            const addFilePart = (label, fileObj) => {
+                if (fileObj) {
+                    parts.push({ text: label });
                     parts.push({
                         inlineData: {
-                            mimeType: fileObj[0].mimetype || 'image/jpeg',
-                            data: fileObj[0].buffer.toString('base64'),
+                            mimeType: fileObj.mimetype || 'image/jpeg',
+                            data: fileObj.buffer.toString('base64'),
                         }
                     });
                 }
             };
-            addFilePart(files.manual);
-            addFilePart(files.object_file);
-            addFilePart(files.golden);
-            parts.push({ text: promptText });
+            addFilePart("Archivo 1 (Manual/Especificación):", files.manual?.[0]);
+            const objectFiles = files.object_file || [];
+            if (objectFiles.length > 0) {
+                addFilePart("Archivo a Inspeccionar (Objeto real final):", objectFiles[0]);
+                for (let i = 1; i < objectFiles.length; i++) {
+                    addFilePart(`Contexto Histórico: Foto de paso previo ${i}:`, objectFiles[i]);
+                }
+            }
+            addFilePart("Archivo de Referencia (Golden Sample):", files.golden?.[0]);
             const request = {
                 model: MODEL_ID,
                 contents: [
@@ -167,6 +179,49 @@ let CvqaService = class CvqaService {
         catch (error) {
             console.error('[CVQA] QA Vision Error:', error.message || error);
             throw new common_1.InternalServerErrorException('Error en la validación por IA: ' + (error.message || ''));
+        }
+    }
+    async validateRulesLogic(rules) {
+        try {
+            const promptText = `
+        Eres un experto inspector de calidad industrial. 
+        Tengo una lista de reglas visuales de inspección. Revisa si hay alguna regla que sea:
+        1. Lógicamente imposible o contradictoria (ej: "las piezas A deben medir más que las piezas A").
+        2. Ambigua sin contexto real o incoherente con otras reglas ("Los circulos azules deben ser de color rojo").
+        3. Físicamente irrealizable.
+        
+        Reglas a verificar:
+        ${JSON.stringify(rules.map(r => r.description), null, 2)}
+
+        Responde ÚNICAMENTE con un JSON en este formato estricto:
+        {
+          "status": "valid" | "invalid",
+          "message": "Si es 'invalid', explica brevemente por qué la regla específica es contradictoria, ambigua o imposible y sugiere cómo corregirla de forma lógica. Si es 'valid', omite este campo."
+        }
+      `;
+            const request = {
+                model: MODEL_ID,
+                contents: [{ role: 'user', parts: [{ text: promptText }] }],
+                generationConfig: {
+                    responseMimeType: 'application/json',
+                    temperature: 0.1,
+                },
+            };
+            const result = await this.generateContentWithRetry(request);
+            const responseText = result.response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+            let jsonResult;
+            try {
+                jsonResult = JSON.parse(responseText.replace(/```json\n?|\n?```/g, ''));
+            }
+            catch (e) {
+                console.error('[CVQA] Rules validation parse error:', responseText);
+                return { status: 'invalid', message: 'No se pudo analizar la respuesta de validación.' };
+            }
+            return jsonResult;
+        }
+        catch (error) {
+            console.error('[CVQA] Rules Validation Error:', error.message || error);
+            throw new common_1.InternalServerErrorException('Error al pre-validar las reglas con IA: ' + (error.message || ''));
         }
     }
 };

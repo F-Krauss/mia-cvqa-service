@@ -15,4 +15,8 @@ export declare class CvqaService {
         confidence: any;
         checks: any;
     }>;
+    validateRulesLogic(rules: any[]): Promise<{
+        status: 'valid' | 'invalid';
+        message?: string;
+    }>;
 }

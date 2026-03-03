@@ -25,7 +25,7 @@ export class CvqaController {
   @ApiResponse({ status: 200, description: 'Comparison complete' })
   @UseInterceptors(FileFieldsInterceptor([
     { name: 'manual', maxCount: 1 },
-    { name: 'object_file', maxCount: 1 },
+    { name: 'object_file', maxCount: 4 },
     { name: 'golden', maxCount: 1 },
   ]))
   async compareVisionQuality(

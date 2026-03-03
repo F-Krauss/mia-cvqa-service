@@ -124,31 +124,47 @@ export class CvqaService {
         const toleranceText = toleranceLines.length > 0 ? toleranceLines.join('\n') : "- Usa tolerancias razonables segun el manual.";
         const notesText = extraNotes ? `\nNotas adicionales del operador:\n${extraNotes}\n` : "";
 
-        return `Eres un inspector de control de calidad industrial. El primer archivo es el manual/especificacion del producto${specVersionText}. El segundo archivo es la pieza a inspeccionar. Si hay un tercer archivo, es un golden sample (pieza correcta). Compara la pieza con el manual y/o golden sample.\n\nManual de referencia: ${specName}${specVersionText}\nReglas del manual:\n${rulesText}\n\nChecks solicitados: ${checksText}.\nTolerancias:\n${toleranceText}\n${notesText}Responde SOLO JSON valido con:\n{ "status": "PASS|FAIL|REVIEW", "summary": "texto corto", "issues": ["lista"], "missing": ["lista"], "confidence": 0.0-1.0, "checks": {"check": true} }\nSi hay dudas o el manual no es claro, usa status REVIEW.`;
+        const pastSteps = p.pastSteps || [];
+        const pastStepsText = pastSteps.length > 0
+          ? `\nContexto de pasos previos (para referencia de estado histórico):\n` + pastSteps.map((s: any, idx: number) => {
+            return `Paso previo ${idx + 1}: ${s.title}\nDescripción: ${s.description}\ntiene foto: ${s.hasPhoto ? 'Sí' : 'No'}`;
+          }).join('\n\n')
+          : "";
+
+        return `Eres un inspector de control de calidad industrial. A continuación se te proporcionarán imágenes etiquetadas (Manual, Objeto real, Golden Sample según existan, y posiblemente fotos de los pasos previos como contexto histórico). Compara la pieza a inspeccionar con el manual y/o golden sample.\n\nManual de referencia: ${specName}${specVersionText}\nReglas de inspección:\n${rulesText}\n${pastStepsText}\n\nChecks solicitados: ${checksText}.\nTolerancias:\n${toleranceText}\n${notesText}Responde SOLO JSON valido con:\n{ "status": "PASS|FAIL|REVIEW", "summary": "texto corto", "issues": ["lista"], "missing": ["lista"], "confidence": 0.0-1.0, "checks": {"check": true} }\nSi hay dudas o las reglas no son claras, usa status REVIEW.`;
       };
 
       const promptText = params.prompt && typeof params.prompt === 'string' && params.prompt.trim() !== ''
         ? params.prompt
         : buildQualityPrompt(params);
 
-      const parts: any[] = [];
+      const parts: any[] = [{ text: promptText }];
 
-      const addFilePart = (fileObj?: Express.Multer.File[]) => {
-        if (fileObj?.[0]) {
+      const addFilePart = (label: string, fileObj?: Express.Multer.File) => {
+        if (fileObj) {
+          parts.push({ text: label });
           parts.push({
             inlineData: {
-              mimeType: fileObj[0].mimetype || 'image/jpeg',
-              data: fileObj[0].buffer.toString('base64'),
+              mimeType: fileObj.mimetype || 'image/jpeg',
+              data: fileObj.buffer.toString('base64'),
             }
           });
         }
       };
 
-      addFilePart(files.manual);
-      addFilePart(files.object_file);
-      addFilePart(files.golden);
+      addFilePart("Archivo 1 (Manual/Especificación):", files.manual?.[0]);
 
-      parts.push({ text: promptText });
+      const objectFiles = files.object_file || [];
+      if (objectFiles.length > 0) {
+        // The first one is the main object file
+        addFilePart("Archivo a Inspeccionar (Objeto real final):", objectFiles[0]);
+        // The rest are past step photos
+        for (let i = 1; i < objectFiles.length; i++) {
+          addFilePart(`Contexto Histórico: Foto de paso previo ${i}:`, objectFiles[i]);
+        }
+      }
+
+      addFilePart("Archivo de Referencia (Golden Sample):", files.golden?.[0]);
 
       const request = {
         model: MODEL_ID,
