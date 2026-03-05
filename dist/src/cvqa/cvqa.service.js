@@ -8,10 +8,14 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CvqaService = void 0;
 const common_1 = require("@nestjs/common");
 const vertexai_1 = require("@google-cloud/vertexai");
+const sharp_1 = __importDefault(require("sharp"));
 const vertex_location_1 = require("../common/vertex-location");
 const vertex_retry_1 = require("../common/vertex-retry");
 const MODEL_ID = process.env.AI_MODEL_ID || process.env.VERTEX_MODEL_ID || 'gemini-2.5-flash';
@@ -108,26 +112,39 @@ let CvqaService = class CvqaService {
                 ? params.prompt
                 : buildQualityPrompt(params);
             const parts = [{ text: promptText }];
-            const addFilePart = (label, fileObj) => {
+            const compressImage = async (buffer) => {
+                try {
+                    return await (0, sharp_1.default)(buffer)
+                        .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
+                        .jpeg({ quality: 80 })
+                        .toBuffer();
+                }
+                catch (err) {
+                    console.warn('[CVQA] Image compression failed, using original buffer', err);
+                    return buffer;
+                }
+            };
+            const addFilePart = async (label, fileObj) => {
                 if (fileObj) {
+                    const optimizedBuffer = await compressImage(fileObj.buffer);
                     parts.push({ text: label });
                     parts.push({
                         inlineData: {
-                            mimeType: fileObj.mimetype || 'image/jpeg',
-                            data: fileObj.buffer.toString('base64'),
+                            mimeType: 'image/jpeg',
+                            data: optimizedBuffer.toString('base64'),
                         }
                     });
                 }
             };
-            addFilePart("Archivo 1 (Manual/Especificación):", files.manual?.[0]);
+            await addFilePart("Archivo 1 (Manual/Especificación):", files.manual?.[0]);
             const objectFiles = files.object_file || [];
             if (objectFiles.length > 0) {
-                addFilePart("Archivo a Inspeccionar (Objeto real final):", objectFiles[0]);
+                await addFilePart("Archivo a Inspeccionar (Objeto real final):", objectFiles[0]);
                 for (let i = 1; i < objectFiles.length; i++) {
-                    addFilePart(`Contexto Histórico: Foto de paso previo ${i}:`, objectFiles[i]);
+                    await addFilePart(`Contexto Histórico: Foto de paso previo ${i}:`, objectFiles[i]);
                 }
             }
-            addFilePart("Archivo de Referencia (Golden Sample):", files.golden?.[0]);
+            await addFilePart("Archivo de Referencia (Golden Sample):", files.golden?.[0]);
             const request = {
                 model: MODEL_ID,
                 contents: [

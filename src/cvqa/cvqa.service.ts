@@ -7,6 +7,7 @@ import {
   VertexAI,
   GenerativeModelPreview,
 } from '@google-cloud/vertexai';
+import sharp from 'sharp';
 import { resolveVertexLocation } from '../common/vertex-location';
 import { withVertexRetry } from '../common/vertex-retry';
 
@@ -140,31 +141,45 @@ export class CvqaService {
 
       const parts: any[] = [{ text: promptText }];
 
-      const addFilePart = (label: string, fileObj?: Express.Multer.File) => {
+      // Helper to compress image before sending to AI
+      const compressImage = async (buffer: Buffer): Promise<Buffer> => {
+        try {
+          return await sharp(buffer)
+            .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 80 })
+            .toBuffer();
+        } catch (err) {
+          console.warn('[CVQA] Image compression failed, using original buffer', err);
+          return buffer;
+        }
+      };
+
+      const addFilePart = async (label: string, fileObj?: Express.Multer.File) => {
         if (fileObj) {
+          const optimizedBuffer = await compressImage(fileObj.buffer);
           parts.push({ text: label });
           parts.push({
             inlineData: {
-              mimeType: fileObj.mimetype || 'image/jpeg',
-              data: fileObj.buffer.toString('base64'),
+              mimeType: 'image/jpeg', // sharp converts to jpeg
+              data: optimizedBuffer.toString('base64'),
             }
           });
         }
       };
 
-      addFilePart("Archivo 1 (Manual/Especificación):", files.manual?.[0]);
+      await addFilePart("Archivo 1 (Manual/Especificación):", files.manual?.[0]);
 
       const objectFiles = files.object_file || [];
       if (objectFiles.length > 0) {
         // The first one is the main object file
-        addFilePart("Archivo a Inspeccionar (Objeto real final):", objectFiles[0]);
+        await addFilePart("Archivo a Inspeccionar (Objeto real final):", objectFiles[0]);
         // The rest are past step photos
         for (let i = 1; i < objectFiles.length; i++) {
-          addFilePart(`Contexto Histórico: Foto de paso previo ${i}:`, objectFiles[i]);
+          await addFilePart(`Contexto Histórico: Foto de paso previo ${i}:`, objectFiles[i]);
         }
       }
 
-      addFilePart("Archivo de Referencia (Golden Sample):", files.golden?.[0]);
+      await addFilePart("Archivo de Referencia (Golden Sample):", files.golden?.[0]);
 
       const request = {
         model: MODEL_ID,
