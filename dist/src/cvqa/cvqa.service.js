@@ -78,7 +78,10 @@ let CvqaService = class CvqaService {
                     ? rules.map((r) => {
                         if (typeof r === 'string')
                             return `- ${r}`;
-                        return `- ${r.description || 'Regla'} ${r.color ? `(Color de zona a revisar: ${r.color})` : ''}`;
+                        const colorHint = r.color
+                            ? ` (Color aproximado de referencia visual de la zona: ${r.color} — compara VISUALMENTE, no exactamente. Considera iluminación, sombras y variación de cámara. Un color similar o del mismo tono cuenta como correcto.)`
+                            : '';
+                        return `- ${r.description || 'Regla'}${colorHint}`;
                     }).join('\n')
                     : "- Usa el manual/especificación como referencia principal.";
                 const tolerances = p.tolerances || {};
@@ -116,6 +119,14 @@ REGLAS GENERALES DE RAZONAMIENTO:
 - Cuando una regla mencione "piezas resaltadas" o "marcadas", enfoca tu análisis exclusivamente en esas piezas.
 - Cuando tengas dudas razonables o la imagen sea ambigua, devuelve status REVIEW, nunca FAIL. Solo devuelve FAIL cuando estés seguro de que la regla se viola claramente.
 - No inferir defectos que no puedas ver con claridad en la imagen.
+- PRINCIPIO GENERAL: Si una regla está aproximadamente cumplida, devuelve PASS. El umbral para pasar debe ser generoso: pequeñas desviaciones de posición, color o forma que no afecten la funcionalidad del ensamble deben ser ignoradas.
+
+COMPARACIÓN DE COLOR:
+- Los colores en las reglas son referencias visuales aproximadas, NO valores exactos de píxel.
+- Las fotos de piezas físicas siempre tienen variaciones por iluminación, sombras, ángulo de cámara y balance de blancos.
+- Para validar una regla de color: si los objetos pertenecen claramente al mismo tono o familia de color (ej: ambos son azul claro, ambos son amarillo), la regla se cumple AUNQUE el tono exacto difiera levemente.
+- Solo marca FAIL por color si los objetos son claramente de colores distintos (ej: uno rojo y otro azul). Diferencias de tono leve = PASS.
+- Cuando veas un código hexadecimal en una regla, úsalo solo para orientarte en el rango de color (ej: azul claro ≈ #4CA1E3), no para comparar exactamente.
 
 Manual de referencia: ${specName}${specVersionText}
 
@@ -203,7 +214,7 @@ Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
             const confidence = typeof jsonResult.confidence === 'number'
                 ? jsonResult.confidence
                 : (typeof jsonResult.score === 'number' ? jsonResult.score : null);
-            const FAIL_CONFIDENCE_THRESHOLD = 0.75;
+            const FAIL_CONFIDENCE_THRESHOLD = 0.85;
             if (status === 'FAIL' && confidence !== null && confidence < FAIL_CONFIDENCE_THRESHOLD) {
                 console.log(`[CVQA] Downgrading FAIL to REVIEW — confidence ${confidence} below threshold ${FAIL_CONFIDENCE_THRESHOLD}`);
                 status = 'REVIEW';
