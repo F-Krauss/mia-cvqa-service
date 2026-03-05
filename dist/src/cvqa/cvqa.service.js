@@ -115,8 +115,8 @@ let CvqaService = class CvqaService {
             const compressImage = async (buffer) => {
                 try {
                     return await (0, sharp_1.default)(buffer)
-                        .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
-                        .jpeg({ quality: 80 })
+                        .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
+                        .jpeg({ quality: 90 })
                         .toBuffer();
                 }
                 catch (err) {
@@ -155,7 +155,7 @@ let CvqaService = class CvqaService {
                 ],
                 generationConfig: {
                     responseMimeType: 'application/json',
-                    temperature: 0.1,
+                    temperature: 0,
                 },
             };
             const result = await this.generateContentWithRetry(request);
@@ -221,7 +221,7 @@ let CvqaService = class CvqaService {
                 contents: [{ role: 'user', parts: [{ text: promptText }] }],
                 generationConfig: {
                     responseMimeType: 'application/json',
-                    temperature: 0.1,
+                    temperature: 0,
                 },
             };
             const result = await this.generateContentWithRetry(request);

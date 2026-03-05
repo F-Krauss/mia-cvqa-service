@@ -142,11 +142,13 @@ export class CvqaService {
       const parts: any[] = [{ text: promptText }];
 
       // Helper to compress image before sending to AI
+      // Higher resolution (1536px) and quality (90) to preserve fine visual detail
+      // needed for precise step validation (piece heights, colors, arrangement)
       const compressImage = async (buffer: Buffer): Promise<Buffer> => {
         try {
           return await sharp(buffer)
-            .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: 80 })
+            .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 90 })
             .toBuffer();
         } catch (err) {
           console.warn('[CVQA] Image compression failed, using original buffer', err);
@@ -191,7 +193,7 @@ export class CvqaService {
         ],
         generationConfig: {
           responseMimeType: 'application/json',
-          temperature: 0.1,
+          temperature: 0,
         },
       };
 
@@ -260,7 +262,7 @@ export class CvqaService {
         contents: [{ role: 'user', parts: [{ text: promptText }] }],
         generationConfig: {
           responseMimeType: 'application/json',
-          temperature: 0.1,
+          temperature: 0,
         },
       };
 
