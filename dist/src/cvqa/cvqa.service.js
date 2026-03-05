@@ -177,6 +177,14 @@ let CvqaService = class CvqaService {
             if (!['PASS', 'FAIL', 'REVIEW'].includes(status)) {
                 status = 'REVIEW';
             }
+            const confidence = typeof jsonResult.confidence === 'number'
+                ? jsonResult.confidence
+                : (typeof jsonResult.score === 'number' ? jsonResult.score : null);
+            const FAIL_CONFIDENCE_THRESHOLD = 0.75;
+            if (status === 'FAIL' && confidence !== null && confidence < FAIL_CONFIDENCE_THRESHOLD) {
+                console.log(`[CVQA] Downgrading FAIL to REVIEW — confidence ${confidence} below threshold ${FAIL_CONFIDENCE_THRESHOLD}`);
+                status = 'REVIEW';
+            }
             const listify = (v) => {
                 if (!v)
                     return [];

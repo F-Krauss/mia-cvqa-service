@@ -218,6 +218,18 @@ export class CvqaService {
         status = 'REVIEW';
       }
 
+      const confidence = typeof jsonResult.confidence === 'number'
+        ? jsonResult.confidence
+        : (typeof jsonResult.score === 'number' ? jsonResult.score : null);
+
+      // If the AI is uncertain (confidence < 0.75) but still calls FAIL,
+      // downgrade to REVIEW so a human can decide — avoids false-negative hard blocks.
+      const FAIL_CONFIDENCE_THRESHOLD = 0.75;
+      if (status === 'FAIL' && confidence !== null && confidence < FAIL_CONFIDENCE_THRESHOLD) {
+        console.log(`[CVQA] Downgrading FAIL to REVIEW — confidence ${confidence} below threshold ${FAIL_CONFIDENCE_THRESHOLD}`);
+        status = 'REVIEW';
+      }
+
       const listify = (v: any): string[] => {
         if (!v) return [];
         if (Array.isArray(v)) return v.map(String);
