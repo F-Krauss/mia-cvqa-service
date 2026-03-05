@@ -106,7 +106,30 @@ let CvqaService = class CvqaService {
                         return `Paso previo ${idx + 1}: ${s.title}\nDescripción: ${s.description}\ntiene foto: ${s.hasPhoto ? 'Sí' : 'No'}`;
                     }).join('\n\n')
                     : "";
-                return `Eres un inspector de control de calidad industrial. A continuación se te proporcionarán imágenes etiquetadas (Manual, Objeto real, Golden Sample según existan, y posiblemente fotos de los pasos previos como contexto histórico). Compara la pieza a inspeccionar con el manual y/o golden sample.\n\nManual de referencia: ${specName}${specVersionText}\nReglas de inspección:\n${rulesText}\n${pastStepsText}\n\nChecks solicitados: ${checksText}.\nTolerancias:\n${toleranceText}\n${notesText}Responde SOLO JSON valido con:\n{ "status": "PASS|FAIL|REVIEW", "summary": "texto corto", "issues": ["lista"], "missing": ["lista"], "confidence": 0.0-1.0, "checks": {"check": true} }\nSi hay dudas o las reglas no son claras, usa status REVIEW.`;
+                return `Eres un inspector de control de calidad en un proceso de ensamble por pasos. Se te proporcionarán imágenes etiquetadas del paso actual y, si existen, fotos de pasos previos como contexto histórico.
+
+REGLAS GENERALES DE RAZONAMIENTO:
+- Las fotos de pasos previos muestran el estado ANTERIOR del ensamble. Úsalas SOLO como referencia para comparar cambios, no como objeto a validar.
+- La imagen a validar es la etiquetada como "Objeto real" o "Archivo a Inspeccionar".
+- Cuando una regla habla de altura entre pasos (ej: "las piezas de este paso deben ser más altas que el paso anterior"), interpreta "más alta" como: la pieza está físicamente en una capa o nivel superior en el ensamble. Una pieza colocada ENCIMA de otras piezas es, por definición, más alta que las piezas sobre las que descansa.
+- Si las piezas resaltadas o marcadas en la imagen están claramente apiladas encima del nivel previo, la regla de altura se cumple.
+- Cuando una regla mencione "piezas resaltadas" o "marcadas", enfoca tu análisis exclusivamente en esas piezas.
+- Cuando tengas dudas razonables o la imagen sea ambigua, devuelve status REVIEW, nunca FAIL. Solo devuelve FAIL cuando estés seguro de que la regla se viola claramente.
+- No inferir defectos que no puedas ver con claridad en la imagen.
+
+Manual de referencia: ${specName}${specVersionText}
+
+Reglas de inspección para este paso:
+${rulesText}
+${pastStepsText}
+
+Checks solicitados: ${checksText}.
+Tolerancias:
+${toleranceText}
+${notesText}
+Responde SOLO JSON valido con:
+{ "status": "PASS|FAIL|REVIEW", "summary": "texto corto", "issues": ["lista"], "missing": ["lista"], "confidence": 0.0-1.0, "checks": {"check": true} }
+Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
             };
             const promptText = params.prompt && typeof params.prompt === 'string' && params.prompt.trim() !== ''
                 ? params.prompt
