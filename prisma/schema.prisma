@@ -5,7 +5,7 @@ generator client {
 
 datasource db {
   provider   = "postgresql"
-  extensions = [uuid_ossp(map: "uuid-ossp", schema: "extensions"), vector(schema: "public")]
+  extensions = [uuid_ossp(map: "uuid-ossp", schema: "extensions")]
 }
 
 model Organization {
@@ -15,21 +15,96 @@ model Organization {
   logo          String?
   active        Boolean              @default(true)
   maxUsers      Int                  @default(2000)
+  maxPlants     Int                  @default(3)
+  maxAiTokens   Int                  @default(1000)
+  activeModules String[]             @default(["ADMIN", "PA", "TA", "DOCS"])
   createdAt     DateTime             @default(now())
   updatedAt     DateTime             @updatedAt
   aifeedbacks   AIFeedback[]
   aiUsageStats  AiUsageStat[]
   aiUserBlocks  AiUserBlock[]
+  aiTrainingExamples AiTrainingExample[]
   areas         Area[]
   auditLogs     AuditLog[]
   emailChannels OrgEmailChannel[]
   setting       OrganizationSetting?
   plants        Plant[]
   procedures    Procedure[]
+  workOrders    WorkOrder[]
   roles         Role[]
   users         User[]
 
+  pieceOrders       PieceOrder[]
+  workOrderAIDatas  WorkOrderAIData[]
+  technicalReports  TechnicalReport[]
+  workOrderLogs     WorkOrderLog[]
+  documentFiles     DocumentFile[]
+  productionReports ProductionReport[]
+  workInstructions  WorkInstruction[]
+  historyEvents     HistoryEvent[]
+  chatSessions      ChatSession[]
+  notificationReads NotificationRead[]
+  billingCheckoutSessions BillingCheckoutSession[]
+  subscription      OrganizationSubscription?
+
   @@index([active])
+}
+
+model BillingCheckoutSession {
+  id                     String        @id @default(cuid())
+  stripeCheckoutSessionId String       @unique
+  stripeCustomerId       String?
+  stripeSubscriptionId   String?
+  organizationId         String?
+  organizationSlug       String
+  companyName            String
+  adminEmail             String
+  billingEmail           String?
+  planId                 String
+  status                 String        @default("pending")
+  payload                Json?
+  paidAt                 DateTime?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+  organization           Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([organizationSlug])
+  @@index([status])
+}
+
+model OrganizationSubscription {
+  id                      String       @id @default(cuid())
+  organizationId          String       @unique
+  planId                  String
+  status                  String       @default("active")
+  stripeCustomerId        String?
+  stripeSubscriptionId    String?      @unique
+  stripeCheckoutSessionId String?
+  adminEmail              String
+  currentPeriodStart      DateTime?
+  currentPeriodEnd        DateTime?
+  cancelAtPeriodEnd       Boolean      @default(false)
+  canceledAt              DateTime?
+  metadata                Json?
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+  organization            Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([currentPeriodEnd])
+}
+
+model BillingWebhookEvent {
+  id            String   @id @default(cuid())
+  stripeEventId String   @unique
+  type          String
+  status        String   @default("processed")
+  payload       Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([type])
 }
 
 model OrgEmailChannel {
@@ -92,6 +167,7 @@ model User {
   aifeedbacks                        AIFeedback[]
   aiUsageStats                       AiUsageStat[]
   aiUserBlocks                       AiUserBlock[]
+  aiTrainingExamples                 AiTrainingExample[]
   documentApprovalsAsResponsible     DocumentApproval[]                  @relation("DocumentResponsible")
   documentApprovalsAsReviewer        DocumentApproval[]                  @relation("DocumentReviewer")
   notificationReads                  NotificationRead[]
@@ -262,6 +338,7 @@ model Machine {
   controlReason            String?
   controlUpdatedAt         DateTime?
   controlSourceWorkOrderId String?
+  archived                 Boolean           @default(false)
   plant                    Plant?            @relation(fields: [plantId], references: [id], onDelete: Cascade)
   process                  Process?          @relation(fields: [processId], references: [id], onDelete: Cascade)
   subprocess               Subprocess?       @relation(fields: [subprocessId], references: [id], onDelete: Cascade)
@@ -323,7 +400,6 @@ model DocumentFile {
   originalName              String
   mimeType                  String
   size                      Int
-  fileHash                  String?
   category                  DocumentCategory
   entityType                String?
   entityId                  String?
@@ -338,44 +414,49 @@ model DocumentFile {
   aiSummary                 String?
   aiResume                  String?
   aiTags                    String[]                   @default([])
-  aiProcessedAt             DateTime?
-  aiProcessingStatus        String?
-  embeddingStatus           String?
-  embeddingProcessedAt      DateTime?
-  resumeEmbedding           Json?
-  createdAt                 DateTime                   @default(now())
-  updatedAt                 DateTime                   @updatedAt
-  aiDocType                 String?
-  aiSafetyInstructions      String[]                   @default([])
   aiEquipmentModels         String[]                   @default([])
   aiPartNumbers             String[]                   @default([])
   aiVendors                 String[]                   @default([])
   aiMaintenanceIntervals    String[]                   @default([])
   aiTechnicalSpecs          String[]                   @default([])
   aiProcedureNames          String[]                   @default([])
+  aiProcessedAt             DateTime?
+  aiProcessingStatus        String?
+  embeddingStatus           String?
+  embeddingProcessedAt      DateTime?
+  resumeEmbedding           Json?
+  fileHash                  String?
+  createdAt                 DateTime                   @default(now())
+  updatedAt                 DateTime                   @updatedAt
+  aiDocType                 String?
+  aiSafetyInstructions      String[]                   @default([])
   areas                     DocumentArea[]
   chunks                    DocumentChunk[]
   machineDocuments          MachineDocument[]
   procedureDocumentVersions ProcedureDocumentVersion[]
   productionReports         ProductionReport[]
   productionReportEntries   ProductionReportEntry[]
+  organizationId            String
+  organization              Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([category, entityId])
   @@index([category, aiDocType])
   @@index([owner])
   @@index([aiProcessingStatus])
+  @@index([fileHash])
+  @@index([organizationId])
 }
 
 model DocumentChunk {
-  id                       String       @id @default(cuid())
-  documentId               String
-  chunkIndex               Int
-  text                     String
-  tokenCount               Int?
-  embedding                Json?
+  id         String       @id @default(cuid())
+  documentId String
+  chunkIndex Int
+  text       String
+  tokenCount Int?
+  embedding  Json?
   technicianSelectionCount Int          @default(0)
-  createdAt                DateTime     @default(now())
-  document                 DocumentFile @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  createdAt  DateTime     @default(now())
+  document   DocumentFile @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@index([documentId, chunkIndex])
   @@index([documentId])
@@ -399,11 +480,15 @@ model Procedure {
   gerente                 String?
   title                   String
   description             String?
-  organizationId          String?
+  organizationId          String
   reviewerId              String?
   responsibleId           String?
   notifyEmail             Boolean                 @default(false)
   notifyWhatsapp          Boolean                 @default(false)
+  documentVisibilityMode  String                  @default("all_states")
+  nonDistributedViewerIds String[]                @default([])
+  uploadPermissionMode    String                  @default("all")
+  uploadUserIds           String[]                @default([])
   status                  String                  @default("active")
   obsoleteDate            DateTime?
   procedureApprovalStatus String                  @default("pending")
@@ -416,7 +501,7 @@ model Procedure {
   createdAt               DateTime                @default(now())
   updatedAt               DateTime                @updatedAt
   approvals               DocumentApproval[]
-  organization            Organization?           @relation(fields: [organizationId], references: [id])
+  organization            Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   plant                   Plant?                  @relation(fields: [plantId], references: [id], onDelete: Cascade)
   process                 Process?                @relation(fields: [processId], references: [id], onDelete: Cascade)
   responsible             User?                   @relation("ProcedureResponsible", fields: [responsibleId], references: [id])
@@ -456,6 +541,7 @@ model ProcedureDocumentVersion {
   uploadDate  DateTime                     @default(now())
   renewalDate DateTime?
   updatedBy   String?
+  uploadedById String?
   fileId      String?
   documentId  String
   references  ProcedureDocumentReference[]
@@ -464,6 +550,7 @@ model ProcedureDocumentVersion {
 
   @@index([documentId])
   @@index([fileId])
+  @@index([uploadedById])
 }
 
 model ProcedureDocumentReference {
@@ -588,7 +675,9 @@ model WorkInstruction {
   createdAt          DateTime                    @default(now())
   updatedAt          DateTime                    @updatedAt
   machineId          String?
+  organizationId     String
   machine            Machine?                    @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  organization       Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   plant              Plant?                      @relation(fields: [plantId], references: [id], onDelete: Cascade)
   process            Process?                    @relation(fields: [processId], references: [id], onDelete: Cascade)
   subprocess         Subprocess?                 @relation(fields: [subprocessId], references: [id], onDelete: Cascade)
@@ -599,6 +688,7 @@ model WorkInstruction {
   @@index([processId])
   @@index([subprocessId])
   @@index([machineId])
+  @@index([organizationId])
 }
 
 model WorkInstructionDocument {
@@ -659,7 +749,9 @@ model ProductionReport {
   documentFileId          String?
   createdAt               DateTime                @default(now())
   updatedAt               DateTime                @updatedAt
+  organizationId          String
   documentFile            DocumentFile?           @relation(fields: [documentFileId], references: [id])
+  organization            Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   plant                   Plant?                  @relation(fields: [plantId], references: [id], onDelete: Cascade)
   procedure               Procedure?              @relation(fields: [procedureId], references: [id])
   process                 Process?                @relation(fields: [processId], references: [id], onDelete: Cascade)
@@ -670,6 +762,7 @@ model ProductionReport {
   @@index([processId])
   @@index([subprocessId])
   @@index([procedureId])
+  @@index([organizationId])
 }
 
 model ProductionReportEntry {
@@ -751,9 +844,11 @@ model WorkOrder {
   partsReplacementStartedAt       DateTime?
   partsReplacementEndedAt         DateTime?
   partsReplacementDurationSeconds Int              @default(0)
+  organizationId                  String?
   pieceOrders                     PieceOrder[]
   technicalReport                 TechnicalReport?
   machine                         Machine?         @relation(fields: [machineId], references: [id])
+  organization                    Organization?    @relation(fields: [organizationId], references: [id])
   plant                           Plant?           @relation(fields: [plantId], references: [id])
   process                         Process?         @relation(fields: [processId], references: [id])
   subprocess                      Subprocess?      @relation(fields: [subprocessId], references: [id])
@@ -764,10 +859,42 @@ model WorkOrder {
   @@index([processId])
   @@index([subprocessId])
   @@index([machineId])
+  @@index([organizationId])
+}
+
+model WorkOrderContextCache {
+  id                            String   @id @default(cuid())
+  workOrderId                   String   @unique
+  organizationId                String?
+  cachedWorkInstructions        Json?
+  cachedSimilarWorkOrders       Json?
+  cachedDocuments               Json?
+  cachedManualInsights          String[] @default([])
+  cachedManualSources           Json?
+  cachedReferenceDictionary     String?
+  relevanceQuery                String?
+  queryEmbedding                Json?
+  similarCachedQueries          String[] @default([])
+  lastEnrichedAt                DateTime @default(now())
+  preloadCompleted              Boolean  @default(false)
+  preloadAttempts               Int      @default(0)
+  expansionQueries              String[] @default([])
+  dynamicallyAddedDocuments     String[] @default([])
+  dynamicallyAddedInstructions  String[] @default([])
+  queryIntent                   String?
+  compressedConversationContext String?
+  createdAt                     DateTime @default(now())
+  updatedAt                     DateTime @updatedAt
+
+  @@index([workOrderId])
+  @@index([organizationId])
+  @@index([preloadCompleted])
+  @@index([lastEnrichedAt])
+  @@index([queryIntent])
 }
 
 model PieceOrder {
-  id                String      @id @default(cuid())
+  id                String        @id @default(cuid())
   workOrderId       String
   plantId           String?
   processId         String?
@@ -775,25 +902,27 @@ model PieceOrder {
   machineId         String?
   pieceName         String
   partNumber        String?
-  quantity          Float       @default(1)
+  quantity          Float         @default(1)
   unit              String?
   supplier          String?
   requestedBy       String?
-  requestedAt       DateTime    @default(now())
+  requestedAt       DateTime      @default(now())
   expectedAt        DateTime?
   orderedAt         DateTime?
   arrivedAt         DateTime?
   installedAt       DateTime?
   trackingReference String?
   notes             String?
-  status            String      @default("requested")
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
-  machine           Machine?    @relation(fields: [machineId], references: [id])
-  plant             Plant?      @relation(fields: [plantId], references: [id])
-  process           Process?    @relation(fields: [processId], references: [id])
-  subprocess        Subprocess? @relation(fields: [subprocessId], references: [id])
-  workOrder         WorkOrder   @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  status            String        @default("requested")
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  machine           Machine?      @relation(fields: [machineId], references: [id])
+  plant             Plant?        @relation(fields: [plantId], references: [id])
+  process           Process?      @relation(fields: [processId], references: [id])
+  subprocess        Subprocess?   @relation(fields: [subprocessId], references: [id])
+  workOrder         WorkOrder     @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  organizationId    String?
+  organization      Organization? @relation(fields: [organizationId], references: [id])
 
   @@index([workOrderId])
   @@index([status])
@@ -801,11 +930,12 @@ model PieceOrder {
   @@index([processId])
   @@index([subprocessId])
   @@index([machineId])
+  @@index([organizationId])
 }
 
 model WorkOrderAIData {
-  id                           String    @id @default(cuid())
-  workOrderId                  String    @unique
+  id                           String        @id @default(cuid())
+  workOrderId                  String        @unique
   classification               String
   priority                     String
   riskLevel                    String
@@ -813,66 +943,85 @@ model WorkOrderAIData {
   qualityImpact                Boolean
   operatorInstructions         String
   rootCauses                   Json
-  suggestedActions             String[]  @default([])
-  createdAt                    DateTime  @default(now())
-  updatedAt                    DateTime  @updatedAt
-  referencedWorkInstructionIds String[]  @default([])
-  referencedDocumentIds        String[]  @default([])
-  referencedWorkOrderIds       String[]  @default([])
+  suggestedActions             String[]      @default([])
+  createdAt                    DateTime      @default(now())
+  updatedAt                    DateTime      @updatedAt
+  referencedWorkInstructionIds String[]      @default([])
+  referencedDocumentIds        String[]      @default([])
+  referencedWorkOrderIds       String[]      @default([])
   aiReferences                 Json?
-  workOrder                    WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  workOrder                    WorkOrder     @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  organizationId               String?
+  organization                 Organization? @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId])
 }
 
 model TechnicalReport {
-  id                 String    @id @default(cuid())
-  workOrderId        String    @unique
+  id                 String        @id @default(cuid())
+  workOrderId        String        @unique
   inspections        String?
   measurements       String?
   observations       String?
   diagnosis          String?
   aiMatch            String?
   rootCause          String?
-  actions            String[]  @default([])
+  actions            String[]      @default([])
   otherActionDetail  String?
   supplies           Json?
   preventiveMeasures String?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
-  workOrder          WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  workOrder          WorkOrder     @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  organizationId     String?
+  organization       Organization? @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId])
 }
 
 model WorkOrderLog {
-  id          String    @id @default(cuid())
-  workOrderId String
-  date        DateTime
-  action      String
-  user        String
-  comment     String?
-  createdAt   DateTime  @default(now())
-  workOrder   WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  id             String        @id @default(cuid())
+  workOrderId    String
+  date           DateTime
+  action         String
+  user           String
+  comment        String?
+  createdAt      DateTime      @default(now())
+  workOrder      WorkOrder     @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
 
   @@index([workOrderId])
+  @@index([organizationId])
 }
 
 model HistoryEvent {
-  id          String   @id @default(cuid())
-  eventType   String
-  title       String
-  user        String
-  timestamp   DateTime
-  criticality String
-  details     Json
-  hierarchy   String
-  createdAt   DateTime @default(now())
+  id             String        @id @default(cuid())
+  eventType      String
+  title          String
+  user           String
+  timestamp      DateTime
+  criticality    String
+  details        Json
+  hierarchy      String
+  createdAt      DateTime      @default(now())
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId])
 }
 
 model ChatSession {
-  id        String        @id @default(cuid())
-  userId    String?
-  context   Json?
-  startedAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
-  messages  ChatMessage[]
+  id             String        @id @default(cuid())
+  userId         String?
+  context        Json?
+  startedAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  messages       ChatMessage[]
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId])
 }
 
 model ChatMessage {
@@ -975,46 +1124,19 @@ model AiUserBlock {
   @@index([organizationId, start, end])
 }
 
-model WorkOrderContextCache {
-  id                           String   @id @default(cuid())
-  workOrderId                  String   @unique
-  organizationId               String?
-  cachedWorkInstructions       Json?
-  cachedSimilarWorkOrders      Json?
-  cachedDocuments              Json?
-  cachedManualInsights         String[] @default([])
-  cachedManualSources          Json?
-  cachedReferenceDictionary    String?
-  relevanceQuery               String?
-  queryEmbedding               Json?    // 768-dim vector for semantic cache lookup
-  queryIntent                  String?
-  compressedConversationContext String?
-  similarCachedQueries         String[] @default([]) // Track semantic query variations
-  lastEnrichedAt               DateTime @default(now())
-  preloadCompleted             Boolean  @default(false)
-  preloadAttempts              Int      @default(0)
-  expansionQueries             String[] @default([])
-  dynamicallyAddedDocuments    String[] @default([])
-  dynamicallyAddedInstructions String[] @default([])
-  createdAt                    DateTime @default(now())
-  updatedAt                    DateTime @updatedAt
-
-  @@index([workOrderId])
-  @@index([organizationId])
-  @@index([preloadCompleted])
-  @@index([lastEnrichedAt])
-}
-
 model NotificationRead {
-  id           String   @id @default(cuid())
-  userId       String
-  resourceType String
-  resourceId   String
-  createdAt    DateTime @default(now())
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id             String        @id @default(cuid())
+  userId         String
+  resourceType   String
+  resourceId     String
+  createdAt      DateTime      @default(now())
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
 
   @@unique([userId, resourceType, resourceId])
   @@index([userId])
+  @@index([organizationId])
 }
 
 enum OrgEmailChannelType {
@@ -1107,4 +1229,40 @@ enum AuditAction {
   LOGIN
   LOGOUT
   ACCESS_DENIED
+}
+
+enum AiTrainingType {
+  CHAT_CORRECTION
+  CVQA_PASS_FAIL_OVERRIDE
+  OCR_SCHEMA_CORRECTION
+  RETRIEVAL_RATING
+}
+
+model AiTrainingExample {
+  id             String         @id @default(cuid())
+  organizationId String
+  userId         String
+  type           AiTrainingType
+  status         String         @default("PENDING") // PENDING, EXPORTED, REJECTED
+  
+  // The raw input that was sent to the AI (e.g., prompt, image base64, OCR image)
+  inputPayload   Json
+  
+  // The original hallucinated or incorrect response from the AI
+  originalOutput Json?
+  
+  // The corrected, "Golden" JSON response provided by the human technician
+  correctedOutput Json
+  
+  // Optional metadata such as model version used, latency, etc.
+  metadata       Json?
+
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, type, status])
+  @@index([userId])
 }

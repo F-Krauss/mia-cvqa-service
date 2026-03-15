@@ -10,15 +10,16 @@ import {
 import sharp from 'sharp';
 import { resolveVertexLocation } from '../common/vertex-location';
 import { withVertexRetry } from '../common/vertex-retry';
+import { PrismaService } from '../prisma/prisma.service';
 
-const MODEL_ID = process.env.AI_MODEL_ID || process.env.VERTEX_MODEL_ID || 'gemini-2.5-flash';
+const MODEL_ID = process.env.CVQA_MODEL_ID || process.env.AI_MODEL_ID || process.env.VERTEX_MODEL_ID || 'gemini-2.5-flash';
 
 @Injectable()
 export class CvqaService {
   private readonly vertexAI: VertexAI | null = null;
   private readonly model: GenerativeModelPreview | null = null;
 
-  constructor() {
+  constructor(private readonly prisma: PrismaService) {
     const projectId = process.env.VERTEX_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
     const locationResolution = resolveVertexLocation([
       'VERTEX_AI_LOCATION',
@@ -165,9 +166,7 @@ Checks solicitados: ${checksText}.
 Tolerancias:
 ${toleranceText}
 ${notesText}
-Responde SOLO JSON valido con:
-{ "status": "PASS|FAIL|REVIEW", "summary": "texto corto", "issues": ["lista"], "missing": ["lista"], "confidence": 0.0-1.0, "checks": {"check": true} }
-Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
+Responde usando la estructura generada por el esquema asegurando coincidencia 100%. Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
       };
 
       const promptText = params.prompt && typeof params.prompt === 'string' && params.prompt.trim() !== ''
@@ -228,6 +227,21 @@ Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
         ],
         generationConfig: {
           responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT' as any,
+            properties: {
+              status: {
+                type: 'STRING' as any,
+                enum: ['PASS', 'FAIL', 'REVIEW'],
+              },
+              summary: { type: 'STRING' as any },
+              issues: { type: 'ARRAY' as any, items: { type: 'STRING' as any } },
+              missing: { type: 'ARRAY' as any, items: { type: 'STRING' as any } },
+              confidence: { type: 'NUMBER' as any },
+              checks: { type: 'OBJECT' as any },
+            },
+            required: ['status', 'summary', 'issues', 'missing', 'confidence'],
+          },
           temperature: 0,
         },
       };
@@ -237,7 +251,7 @@ Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
 
       let jsonResult;
       try {
-        jsonResult = JSON.parse(responseText.replace(/```json\n?|\n?```/g, ''));
+        jsonResult = JSON.parse(responseText);
       } catch (e) {
         console.error('[CVQA] QA Vision parse error:', responseText);
         jsonResult = {
@@ -309,6 +323,17 @@ Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
         contents: [{ role: 'user', parts: [{ text: promptText }] }],
         generationConfig: {
           responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT' as any,
+            properties: {
+              status: {
+                type: 'STRING' as any,
+                enum: ['valid', 'invalid'],
+              },
+              message: { type: 'STRING' as any },
+            },
+            required: ['status'],
+          },
           temperature: 0,
         },
       };
@@ -318,7 +343,7 @@ Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
 
       let jsonResult;
       try {
-        jsonResult = JSON.parse(responseText.replace(/```json\n?|\n?```/g, ''));
+        jsonResult = JSON.parse(responseText);
       } catch (e) {
         console.error('[CVQA] Rules validation parse error:', responseText);
         return { status: 'invalid', message: 'No se pudo analizar la respuesta de validación.' };
@@ -328,6 +353,32 @@ Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
     } catch (error: any) {
       console.error('[CVQA] Rules Validation Error:', error.message || error);
       throw new InternalServerErrorException('Error al pre-validar las reglas con IA: ' + (error.message || ''));
+    }
+  }
+
+  async saveTrainingExample(
+    organizationId: string,
+    userId: string,
+    inputPayload: any,
+    originalOutput: any,
+    correctedOutput: any
+  ) {
+    try {
+      const example = await this.prisma.aiTrainingExample.create({
+        data: {
+          organizationId,
+          userId,
+          type: 'CVQA_PASS_FAIL_OVERRIDE',
+          inputPayload,
+          originalOutput: originalOutput || {},
+          correctedOutput,
+          status: 'PENDING',
+        },
+      });
+      return { success: true, exampleId: example.id };
+    } catch (error: any) {
+      console.error('[CVQA] Failed to save training example:', error);
+      throw new InternalServerErrorException('Error saving AI training example');
     }
   }
 }

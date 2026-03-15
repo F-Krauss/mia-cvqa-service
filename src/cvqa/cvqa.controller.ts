@@ -54,5 +54,29 @@ export class CvqaController {
     }
     return this.cvqaService.validateRulesLogic(rules);
   }
+
+  @Post('vision/feedback')
+  @ApiOperation({ summary: 'Save an AI training example when a CVQA result is manually overridden' })
+  @ApiResponse({ status: 201, description: 'Training example saved' })
+  async submitVisionFeedback(
+    @Body() payload: { inputPayload: any; originalOutput: any; correctedOutput: any },
+    @Req() req: any,
+  ) {
+    if (!payload.inputPayload || !payload.correctedOutput) {
+      throw new BadRequestException('inputPayload and correctedOutput are required');
+    }
+    const user = req.user;
+    const organizationId = req.organizationId || user?.organizationId;
+    if (!user?.sub || !organizationId) {
+      throw new BadRequestException('User and Organization ID required for feedback tracking');
+    }
+    return this.cvqaService.saveTrainingExample(
+      organizationId,
+      user.sub,
+      payload.inputPayload,
+      payload.originalOutput,
+      payload.correctedOutput
+    );
+  }
 }
 
