@@ -18,11 +18,14 @@ const vertexai_1 = require("@google-cloud/vertexai");
 const sharp_1 = __importDefault(require("sharp"));
 const vertex_location_1 = require("../common/vertex-location");
 const vertex_retry_1 = require("../common/vertex-retry");
-const MODEL_ID = process.env.AI_MODEL_ID || process.env.VERTEX_MODEL_ID || 'gemini-2.5-flash';
+const prisma_service_1 = require("../prisma/prisma.service");
+const MODEL_ID = process.env.CVQA_MODEL_ID || process.env.AI_MODEL_ID || process.env.VERTEX_MODEL_ID || 'gemini-2.5-flash';
 let CvqaService = class CvqaService {
+    prisma;
     vertexAI = null;
     model = null;
-    constructor() {
+    constructor(prisma) {
+        this.prisma = prisma;
         const projectId = process.env.VERTEX_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
         const locationResolution = (0, vertex_location_1.resolveVertexLocation)([
             'VERTEX_AI_LOCATION',
@@ -138,9 +141,7 @@ Checks solicitados: ${checksText}.
 Tolerancias:
 ${toleranceText}
 ${notesText}
-Responde SOLO JSON valido con:
-{ "status": "PASS|FAIL|REVIEW", "summary": "texto corto", "issues": ["lista"], "missing": ["lista"], "confidence": 0.0-1.0, "checks": {"check": true} }
-Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
+Responde usando la estructura generada por el esquema asegurando coincidencia 100%. Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
             };
             const promptText = params.prompt && typeof params.prompt === 'string' && params.prompt.trim() !== ''
                 ? params.prompt
@@ -189,6 +190,21 @@ Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
                 ],
                 generationConfig: {
                     responseMimeType: 'application/json',
+                    responseSchema: {
+                        type: 'OBJECT',
+                        properties: {
+                            status: {
+                                type: 'STRING',
+                                enum: ['PASS', 'FAIL', 'REVIEW'],
+                            },
+                            summary: { type: 'STRING' },
+                            issues: { type: 'ARRAY', items: { type: 'STRING' } },
+                            missing: { type: 'ARRAY', items: { type: 'STRING' } },
+                            confidence: { type: 'NUMBER' },
+                            checks: { type: 'OBJECT' },
+                        },
+                        required: ['status', 'summary', 'issues', 'missing', 'confidence'],
+                    },
                     temperature: 0,
                 },
             };
@@ -196,7 +212,7 @@ Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
             const responseText = result.response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
             let jsonResult;
             try {
-                jsonResult = JSON.parse(responseText.replace(/```json\n?|\n?```/g, ''));
+                jsonResult = JSON.parse(responseText);
             }
             catch (e) {
                 console.error('[CVQA] QA Vision parse error:', responseText);
@@ -263,6 +279,17 @@ Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
                 contents: [{ role: 'user', parts: [{ text: promptText }] }],
                 generationConfig: {
                     responseMimeType: 'application/json',
+                    responseSchema: {
+                        type: 'OBJECT',
+                        properties: {
+                            status: {
+                                type: 'STRING',
+                                enum: ['valid', 'invalid'],
+                            },
+                            message: { type: 'STRING' },
+                        },
+                        required: ['status'],
+                    },
                     temperature: 0,
                 },
             };
@@ -270,7 +297,7 @@ Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
             const responseText = result.response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
             let jsonResult;
             try {
-                jsonResult = JSON.parse(responseText.replace(/```json\n?|\n?```/g, ''));
+                jsonResult = JSON.parse(responseText);
             }
             catch (e) {
                 console.error('[CVQA] Rules validation parse error:', responseText);
@@ -283,10 +310,30 @@ Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
             throw new common_1.InternalServerErrorException('Error al pre-validar las reglas con IA: ' + (error.message || ''));
         }
     }
+    async saveTrainingExample(organizationId, userId, inputPayload, originalOutput, correctedOutput) {
+        try {
+            const example = await this.prisma.aiTrainingExample.create({
+                data: {
+                    organizationId,
+                    userId,
+                    type: 'CVQA_PASS_FAIL_OVERRIDE',
+                    inputPayload,
+                    originalOutput: originalOutput || {},
+                    correctedOutput,
+                    status: 'PENDING',
+                },
+            });
+            return { success: true, exampleId: example.id };
+        }
+        catch (error) {
+            console.error('[CVQA] Failed to save training example:', error);
+            throw new common_1.InternalServerErrorException('Error saving AI training example');
+        }
+    }
 };
 exports.CvqaService = CvqaService;
 exports.CvqaService = CvqaService = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [])
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService])
 ], CvqaService);
 //# sourceMappingURL=cvqa.service.js.map

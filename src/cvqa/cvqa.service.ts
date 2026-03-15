@@ -12,7 +12,7 @@ import { resolveVertexLocation } from '../common/vertex-location';
 import { withVertexRetry } from '../common/vertex-retry';
 import { PrismaService } from '../prisma/prisma.service';
 
-const MODEL_ID = process.env.CVQA_MODEL_ID || process.env.AI_MODEL_ID || process.env.VERTEX_MODEL_ID || 'gemini-1.5-flash';
+const MODEL_ID = process.env.CVQA_MODEL_ID || process.env.AI_MODEL_ID || process.env.VERTEX_MODEL_ID || 'gemini-2.5-flash';
 
 @Injectable()
 export class CvqaService {

@@ -18,4 +18,12 @@ export declare class CvqaController {
         status: "valid" | "invalid";
         message?: string;
     }>;
+    submitVisionFeedback(payload: {
+        inputPayload: any;
+        originalOutput: any;
+        correctedOutput: any;
+    }, req: any): Promise<{
+        success: boolean;
+        exampleId: any;
+    }>;
 }

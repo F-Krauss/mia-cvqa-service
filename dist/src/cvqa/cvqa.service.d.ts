@@ -1,7 +1,9 @@
+import { PrismaService } from '../prisma/prisma.service';
 export declare class CvqaService {
+    private readonly prisma;
     private readonly vertexAI;
     private readonly model;
-    constructor();
+    constructor(prisma: PrismaService);
     private generateContentWithRetry;
     compareVisionQuality(files: {
         manual?: Express.Multer.File[];
@@ -18,5 +20,9 @@ export declare class CvqaService {
     validateRulesLogic(rules: any[]): Promise<{
         status: 'valid' | 'invalid';
         message?: string;
+    }>;
+    saveTrainingExample(organizationId: string, userId: string, inputPayload: any, originalOutput: any, correctedOutput: any): Promise<{
+        success: boolean;
+        exampleId: any;
     }>;
 }

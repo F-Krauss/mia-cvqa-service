@@ -37,6 +37,17 @@ let CvqaController = class CvqaController {
         }
         return this.cvqaService.validateRulesLogic(rules);
     }
+    async submitVisionFeedback(payload, req) {
+        if (!payload.inputPayload || !payload.correctedOutput) {
+            throw new common_1.BadRequestException('inputPayload and correctedOutput are required');
+        }
+        const user = req.user;
+        const organizationId = req.organizationId || user?.organizationId;
+        if (!user?.sub || !organizationId) {
+            throw new common_1.BadRequestException('User and Organization ID required for feedback tracking');
+        }
+        return this.cvqaService.saveTrainingExample(organizationId, user.sub, payload.inputPayload, payload.originalOutput, payload.correctedOutput);
+    }
 };
 exports.CvqaController = CvqaController;
 __decorate([
@@ -64,6 +75,16 @@ __decorate([
     __metadata("design:paramtypes", [Array]),
     __metadata("design:returntype", Promise)
 ], CvqaController.prototype, "validateRulesLogic", null);
+__decorate([
+    (0, common_1.Post)('vision/feedback'),
+    (0, swagger_1.ApiOperation)({ summary: 'Save an AI training example when a CVQA result is manually overridden' }),
+    (0, swagger_1.ApiResponse)({ status: 201, description: 'Training example saved' }),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], CvqaController.prototype, "submitVisionFeedback", null);
 exports.CvqaController = CvqaController = __decorate([
     (0, common_1.Controller)('ai'),
     (0, common_1.UseGuards)(jwt_auth_guard_1.JwtAuthGuard),

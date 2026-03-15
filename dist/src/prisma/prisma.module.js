@@ -6,24 +6,17 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
     return c > 3 && r && Object.defineProperty(target, key, r), r;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CvqaModule = void 0;
+exports.PrismaModule = void 0;
 const common_1 = require("@nestjs/common");
-const cvqa_controller_1 = require("./cvqa.controller");
-const cvqa_service_1 = require("./cvqa.service");
-const cache_service_1 = require("../common/cache.service");
-const prisma_module_1 = require("../prisma/prisma.module");
-let CvqaModule = class CvqaModule {
+const prisma_service_1 = require("./prisma.service");
+let PrismaModule = class PrismaModule {
 };
-exports.CvqaModule = CvqaModule;
-exports.CvqaModule = CvqaModule = __decorate([
+exports.PrismaModule = PrismaModule;
+exports.PrismaModule = PrismaModule = __decorate([
+    (0, common_1.Global)(),
     (0, common_1.Module)({
-        controllers: [cvqa_controller_1.CvqaController],
-        imports: [prisma_module_1.PrismaModule],
-        providers: [
-            cvqa_service_1.CvqaService,
-            cache_service_1.CacheService,
-        ],
-        exports: [cvqa_service_1.CvqaService, cache_service_1.CacheService],
+        providers: [prisma_service_1.PrismaService],
+        exports: [prisma_service_1.PrismaService],
     })
-], CvqaModule);
-//# sourceMappingURL=cvqa.module.js.map
+], PrismaModule);
+//# sourceMappingURL=prisma.module.js.map
