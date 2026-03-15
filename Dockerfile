@@ -23,8 +23,10 @@ ENV NODE_ENV=production
 RUN apt-get update && apt-get install -y libvips && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
+COPY prisma ./prisma
 
 RUN npm ci --omit=dev
+RUN npx prisma generate
 
 COPY --from=build /usr/src/app/dist ./dist
 
