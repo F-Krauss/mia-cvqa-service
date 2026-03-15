@@ -20,7 +20,7 @@ WORKDIR /usr/src/app
 
 ENV NODE_ENV=production
 
-RUN apt-get update && apt-get install -y libvips && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y libvips openssl && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
 COPY prisma ./prisma
