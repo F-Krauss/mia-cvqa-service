@@ -2,6 +2,9 @@ node_modules/
 dist/
 *.log
 *.tsbuildinfo
+.venv/
+venv/
+__pycache__/
 .env
 .env.*
 !.env.example
