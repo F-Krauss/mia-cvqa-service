@@ -3,11 +3,24 @@
 const { Client } = require('pg');
 const { PredictionServiceClient, helpers } = require('@google-cloud/aiplatform');
 
-const DB_URL = 'postgresql://postgres.ajxahzbpuczxpjfgwqpr:vuvkis-pUbse7-siptan@aws-0-us-west-2.pooler.supabase.com:6543/postgres?sslmode=no-verify';
-const PROJECT = 'mia-test-ocr';
-const LOCATION = 'us-central1';
+const DB_URL = process.env.DATABASE_URL_DIRECT || process.env.DATABASE_URL;
+const PROJECT = process.env.VERTEX_PROJECT_ID;
+const LOCATION = process.env.VERTEX_LOCATION || 'us-central1';
 const MODEL = `projects/${PROJECT}/locations/${LOCATION}/publishers/google/models/text-embedding-004`;
 const BATCH = 5;
+const DATABASE_SCHEMA = process.env.DATABASE_SCHEMA || 'mia-test';
+
+if (!DB_URL) {
+    throw new Error('Set DATABASE_URL or DATABASE_URL_DIRECT before running this script.');
+}
+
+if (!PROJECT) {
+    throw new Error('Set VERTEX_PROJECT_ID before running this script.');
+}
+
+if (!/^[A-Za-z0-9_-]+$/.test(DATABASE_SCHEMA)) {
+    throw new Error(`Invalid DATABASE_SCHEMA "${DATABASE_SCHEMA}"`);
+}
 
 async function embedTexts(client, texts, taskType = 'RETRIEVAL_DOCUMENT') {
     const instances = texts.map(text => helpers.toValue({ content: text, taskType }));
@@ -61,7 +74,7 @@ async function main() {
     // Mark document as completed if all done
     const { rows: remaining } = await db.query(`SELECT 1 FROM "mia-docs-vectors"."document_chunk_vectors" WHERE embedding IS NULL LIMIT 1`);
     if (remaining.length === 0) {
-        await db.query(`UPDATE "mia-test"."DocumentFile" SET "embeddingStatus" = 'completed', "embeddingProcessedAt" = NOW() WHERE "embeddingStatus" IN ('pending', 'processing')`);
+        await db.query(`UPDATE "${DATABASE_SCHEMA}"."DocumentFile" SET "embeddingStatus" = 'completed', "embeddingProcessedAt" = NOW() WHERE "embeddingStatus" IN ('pending', 'processing')`);
         console.log('✅ All chunks embedded, document marked as completed.');
     } else {
         console.log(`⚠️ Still ${remaining.length} chunk(s) missing.`);
