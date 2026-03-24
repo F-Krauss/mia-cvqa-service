@@ -1235,7 +1235,18 @@ enum AiTrainingType {
   CHAT_CORRECTION
   CVQA_PASS_FAIL_OVERRIDE
   OCR_SCHEMA_CORRECTION
+  QUALITY_INSPECTION_CORRECTION
   RETRIEVAL_RATING
+  WORK_INSTRUCTION_IMPORT_CORRECTION
+  WORK_ORDER_CHAT_CORRECTION
+}
+
+enum AiLearningTrack {
+  WORK_ORDERS
+  QUALITY_INSPECTIONS
+  CVQA
+  WORK_INSTRUCTION_IMPORT
+  OCR
 }
 
 model AiTrainingExample {
@@ -1243,6 +1254,8 @@ model AiTrainingExample {
   organizationId String
   userId         String
   type           AiTrainingType
+  track          AiLearningTrack?
+  subworkflow    String?
   status         String         @default("PENDING") // PENDING, EXPORTED, REJECTED
   
   // The raw input that was sent to the AI (e.g., prompt, image base64, OCR image)
@@ -1264,5 +1277,7 @@ model AiTrainingExample {
   user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([organizationId, type, status])
+  @@index([organizationId, track, status])
+  @@index([track, subworkflow])
   @@index([userId])
 }
