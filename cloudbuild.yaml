@@ -34,7 +34,7 @@ images:
   - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/cloud-run-source-deploy/mia-web-app/${_SERVICE_NAME}:$COMMIT_SHA'
 
 substitutions:
-  _PROJECT_ID: mia-test-ocr
+  _PROJECT_ID: mia-production-project
   _REGION: northamerica-south1
   _SERVICE_NAME: mia-cvqa-service
 

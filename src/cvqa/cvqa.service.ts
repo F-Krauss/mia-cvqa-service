@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  HttpException,
+  HttpStatus,
   Injectable,
   InternalServerErrorException,
 } from '@nestjs/common';
@@ -9,7 +11,11 @@ import {
 } from '@google-cloud/vertexai';
 import sharp from 'sharp';
 import { resolveVertexLocation } from '../common/vertex-location';
-import { withVertexRetry } from '../common/vertex-retry';
+import {
+  extractErrorMessage,
+  extractStatusCode,
+  withVertexRetry,
+} from '../common/vertex-retry';
 import { PrismaService } from '../prisma/prisma.service';
 
 const MODEL_ID =
@@ -297,8 +303,21 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
         checks: jsonResult.checks || null,
       };
     } catch (error: any) {
-      console.error('[CVQA] QA Vision Error:', error.message || error);
-      throw new InternalServerErrorException('Error en la validación por IA: ' + (error.message || ''));
+      const statusCode = extractStatusCode(error);
+      const errorMessage = extractErrorMessage(error);
+      console.error('[CVQA] QA Vision Error:', errorMessage);
+      if (
+        statusCode === 429 ||
+        errorMessage.toLowerCase().includes('resource_exhausted')
+      ) {
+        throw new HttpException(
+          'El servicio de validación por IA está saturado. Intenta de nuevo en unos segundos.',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      throw new InternalServerErrorException(
+        'Error en la validación por IA: ' + errorMessage,
+      );
     }
   }
 

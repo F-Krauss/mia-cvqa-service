@@ -60,7 +60,7 @@ const DEFAULT_BACKOFF_MULTIPLIER = Number.isFinite(
   ? Math.max(1, Number(process.env.VERTEX_RETRY_BACKOFF_MULTIPLIER))
   : 2;
 
-const extractStatusCode = (error: any): number | undefined => {
+export const extractStatusCode = (error: any): number | undefined => {
   const candidates = [
     error?.status,
     error?.code,
