@@ -146,11 +146,11 @@ export class CvqaService {
           }).join('\n\n')
           : "";
 
-        return `Eres un inspector de control de calidad en un proceso de ensamble por pasos. Se te proporcionarán imágenes etiquetadas del paso actual y, si existen, fotos de pasos previos como contexto histórico.
+        return `Eres un inspector de control de calidad en un proceso de ensamble por pasos. Se te proporcionarán una o más imágenes del objeto a validar y, si existen, imágenes de referencia.
 
 REGLAS GENERALES DE RAZONAMIENTO:
-- Las fotos de pasos previos muestran el estado ANTERIOR del ensamble. Úsalas SOLO como referencia para comparar cambios, no como objeto a validar.
-- La imagen a validar es la etiquetada como "Objeto real" o "Archivo a Inspeccionar".
+- Las imágenes etiquetadas como "Objeto real" o "Archivo a Inspeccionar" son la evidencia principal a validar.
+- Las imágenes etiquetadas como "Archivo de Referencia" o "Golden Sample" son referencias del resultado esperado.
 - Cuando una regla habla de altura entre pasos (ej: "las piezas de este paso deben ser más altas que el paso anterior"), interpreta "más alta" como: la pieza está físicamente en una capa o nivel superior en el ensamble. Una pieza colocada ENCIMA de otras piezas es, por definición, más alta que las piezas sobre las que descansa.
 - Si las piezas resaltadas o marcadas en la imagen están claramente apiladas encima del nivel previo, la regla de altura se cumple.
 - Cuando una regla mencione "piezas resaltadas" o "marcadas", enfoca tu análisis exclusivamente en esas piezas.
@@ -216,15 +216,23 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
 
       const objectFiles = files.object_file || [];
       if (objectFiles.length > 0) {
-        // The first one is the main object file
-        await addFilePart("Archivo a Inspeccionar (Objeto real final):", objectFiles[0]);
-        // The rest are past step photos
-        for (let i = 1; i < objectFiles.length; i++) {
-          await addFilePart(`Contexto Histórico: Foto de paso previo ${i}:`, objectFiles[i]);
+        for (let i = 0; i < objectFiles.length; i++) {
+          await addFilePart(
+            i === 0
+              ? "Archivo a Inspeccionar 1 (Objeto real):"
+              : `Archivo a Inspeccionar ${i + 1} (Evidencia adicional):`,
+            objectFiles[i],
+          );
         }
       }
 
-      await addFilePart("Archivo de Referencia (Golden Sample):", files.golden?.[0]);
+      const goldenFiles = files.golden || [];
+      for (let i = 0; i < goldenFiles.length; i++) {
+        await addFilePart(
+          `Archivo de Referencia ${i + 1} (Golden Sample):`,
+          goldenFiles[i],
+        );
+      }
 
       const request = {
         model: MODEL_ID,
