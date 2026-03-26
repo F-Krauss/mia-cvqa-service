@@ -56,10 +56,27 @@ export class CvqaController {
     @Body('payload') payloadString?: string,
     @Body('rules') legacyRules?: any[],
   ) {
-    let payload: Record<string, any> = { rules: legacyRules };
+    let payload: {
+      rules: any[];
+      referenceImageDescription?: string;
+      subjectLabel?: string;
+    } = {
+      rules: Array.isArray(legacyRules) ? legacyRules : [],
+    };
     if (payloadString) {
       try {
-        payload = JSON.parse(payloadString);
+        const parsed = JSON.parse(payloadString) as Record<string, any>;
+        payload = {
+          rules: Array.isArray(parsed?.rules) ? parsed.rules : [],
+          referenceImageDescription:
+            typeof parsed?.referenceImageDescription === 'string'
+              ? parsed.referenceImageDescription
+              : undefined,
+          subjectLabel:
+            typeof parsed?.subjectLabel === 'string'
+              ? parsed.subjectLabel
+              : undefined,
+        };
       } catch (error) {
         throw new BadRequestException('Invalid payload JSON');
       }
