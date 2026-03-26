@@ -10,6 +10,7 @@ import {
   GenerativeModelPreview,
 } from '@google-cloud/vertexai';
 import sharp from 'sharp';
+import { createHash } from 'node:crypto';
 import { resolveVertexLocation } from '../common/vertex-location';
 import {
   extractErrorMessage,
@@ -22,6 +23,10 @@ const MODEL_ID =
   process.env.CVQA_MODEL_ID ||
   process.env.VERTEX_MODEL_ID ||
   'gemini-2.5-flash';
+const DEFAULT_COMPARE_TIMEOUT_MS = 55_000;
+const SMALL_IMAGE_BYTES_THRESHOLD = 256 * 1024;
+const LIGHT_IMAGE_MAX_DIMENSION = 1024;
+const DEFAULT_IMAGE_MAX_DIMENSION = 1536;
 
 type VisionValidationRule = {
   id?: string;
@@ -194,10 +199,25 @@ const createAnnotatedReferenceBuffer = async (
     .toBuffer();
 };
 
+const parsePositiveInt = (value: string | undefined, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+};
+
+const fingerprintBuffer = (buffer: Buffer) =>
+  createHash('sha1').update(buffer).digest('hex');
+
+const isSvgMimeType = (mimeType?: string) =>
+  String(mimeType || '').toLowerCase().includes('svg');
+
 @Injectable()
 export class CvqaService {
   private readonly vertexAI: VertexAI | null = null;
   private readonly model: GenerativeModelPreview | null = null;
+  private readonly compareTimeoutMs = parsePositiveInt(
+    process.env.CVQA_COMPARE_TIMEOUT_MS,
+    DEFAULT_COMPARE_TIMEOUT_MS,
+  );
 
   constructor(private readonly prisma: PrismaService) {
     const projectId = process.env.VERTEX_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
@@ -250,6 +270,99 @@ export class CvqaService {
     );
   }
 
+  private logStage(stage: string, startedAt: number, details?: string) {
+    const durationMs = Date.now() - startedAt;
+    const suffix = details ? ` (${details})` : '';
+    console.info(`[CVQA] ${stage} completed in ${durationMs}ms${suffix}`);
+  }
+
+  private async withCompareTimeout<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(
+          new HttpException(
+            'La comparación CVQA excedió el tiempo límite del servicio. Intenta de nuevo.',
+            HttpStatus.GATEWAY_TIMEOUT,
+          ),
+        );
+      }, this.compareTimeoutMs);
+
+      operation()
+        .then((result) => {
+          clearTimeout(timer);
+          resolve(result);
+        })
+        .catch((error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+    });
+  }
+
+  private async optimizeImageForVertex(
+    buffer: Buffer,
+    mimeType?: string,
+  ): Promise<{ buffer: Buffer; mimeType: string }> {
+    try {
+      if (isSvgMimeType(mimeType)) {
+        return {
+          buffer: await sharp(buffer, { density: 144 })
+            .resize(LIGHT_IMAGE_MAX_DIMENSION, LIGHT_IMAGE_MAX_DIMENSION, {
+              fit: 'inside',
+              withoutEnlargement: true,
+              background: '#ffffff',
+            })
+            .flatten({ background: '#ffffff' })
+            .png({ compressionLevel: 9 })
+            .toBuffer(),
+          mimeType: 'image/png',
+        };
+      }
+
+      const image = sharp(buffer).rotate();
+      const metadata = await image.metadata();
+      const width = metadata.width || 0;
+      const height = metadata.height || 0;
+      const isSmallImage =
+        buffer.length <= SMALL_IMAGE_BYTES_THRESHOLD &&
+        width > 0 &&
+        height > 0 &&
+        width <= LIGHT_IMAGE_MAX_DIMENSION &&
+        height <= LIGHT_IMAGE_MAX_DIMENSION;
+
+      if (isSmallImage) {
+        if ((mimeType || '').toLowerCase() === 'image/jpeg') {
+          return { buffer, mimeType: 'image/jpeg' };
+        }
+        return {
+          buffer: await image
+            .jpeg({ quality: 88 })
+            .toBuffer(),
+          mimeType: 'image/jpeg',
+        };
+      }
+
+      return {
+        buffer: await image
+          .resize(DEFAULT_IMAGE_MAX_DIMENSION, DEFAULT_IMAGE_MAX_DIMENSION, {
+            fit: 'inside',
+            withoutEnlargement: true,
+          })
+          .jpeg({ quality: 88 })
+          .toBuffer(),
+        mimeType: 'image/jpeg',
+      };
+    } catch (err) {
+      console.warn('[CVQA] Image optimization failed, using original buffer', err);
+      return {
+        buffer,
+        mimeType: mimeType || 'image/jpeg',
+      };
+    }
+  }
+
   async compareVisionQuality(
     files: {
       manual?: Express.Multer.File[];
@@ -265,6 +378,7 @@ export class CvqaService {
     }
 
     try {
+      const startedAt = Date.now();
       let params: Record<string, any> = {};
       if (paramsString) {
         try {
@@ -277,6 +391,7 @@ export class CvqaService {
         ...params,
         rules: normalizeVisionValidationRules(params.rules),
       };
+      this.logStage('params normalization', startedAt);
 
       const buildQualityPrompt = (p: any): string => {
         const specName = p.specName || "manual";
@@ -359,43 +474,45 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
         : buildQualityPrompt(params);
 
       const parts: any[] = [{ text: promptText }];
+      const optimizedCache = new Map<
+        string,
+        Promise<{ buffer: Buffer; mimeType: string }>
+      >();
 
-      // Helper to compress image before sending to AI
-      // Higher resolution (1536px) and quality (90) to preserve fine visual detail
-      // needed for precise step validation (piece heights, colors, arrangement)
-      const compressImage = async (buffer: Buffer): Promise<Buffer> => {
-        try {
-          return await sharp(buffer)
-            .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: 90 })
-            .toBuffer();
-        } catch (err) {
-          console.warn('[CVQA] Image compression failed, using original buffer', err);
-          return buffer;
-        }
+      const getOptimizedImage = (fileObj: Express.Multer.File) => {
+        const cacheKey = `${fingerprintBuffer(fileObj.buffer)}:${fileObj.mimetype || ''}`;
+        const existing = optimizedCache.get(cacheKey);
+        if (existing) return existing;
+        const next = this.optimizeImageForVertex(fileObj.buffer, fileObj.mimetype);
+        optimizedCache.set(cacheKey, next);
+        return next;
       };
 
       const addFilePart = async (label: string, fileObj?: Express.Multer.File) => {
         if (fileObj) {
-          const optimizedBuffer = await compressImage(fileObj.buffer);
+          const optimized = await getOptimizedImage(fileObj);
           parts.push({ text: label });
           parts.push({
             inlineData: {
-              mimeType: 'image/jpeg', // sharp converts to jpeg
-              data: optimizedBuffer.toString('base64'),
+              mimeType: optimized.mimeType,
+              data: optimized.buffer.toString('base64'),
             }
           });
         }
       };
 
-      const addBufferPart = async (label: string, buffer?: Buffer | null) => {
+      const addBufferPart = async (
+        label: string,
+        buffer?: Buffer | null,
+        mimeType?: string,
+      ) => {
         if (!buffer) return;
-        const optimizedBuffer = await compressImage(buffer);
+        const optimized = await this.optimizeImageForVertex(buffer, mimeType);
         parts.push({ text: label });
         parts.push({
           inlineData: {
-            mimeType: 'image/jpeg',
-            data: optimizedBuffer.toString('base64'),
+            mimeType: optimized.mimeType,
+            data: optimized.buffer.toString('base64'),
           }
         });
       };
@@ -403,6 +520,12 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
       await addFilePart("Archivo 1 (Manual/Especificación):", files.manual?.[0]);
 
       const objectFiles = files.object_file || [];
+      const goldenFiles = files.golden || [];
+      const primaryFilesAreIdentical =
+        objectFiles.length > 0 &&
+        goldenFiles.length > 0 &&
+        objectFiles[0].buffer.equals(goldenFiles[0].buffer);
+
       if (objectFiles.length > 0) {
         for (let i = 0; i < objectFiles.length; i++) {
           await addFilePart(
@@ -413,14 +536,20 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
           );
         }
       }
-
-      const goldenFiles = files.golden || [];
       for (let i = 0; i < goldenFiles.length; i++) {
+        if (i === 0 && primaryFilesAreIdentical) {
+          parts.push({
+            text:
+              'Archivo de Referencia 1 (Golden Sample): idéntico byte a byte al objeto real principal. Usa la misma imagen como referencia y evidencia para comparar estructura, posición y cumplimiento de reglas.',
+          });
+          continue;
+        }
         await addFilePart(
           `Archivo de Referencia ${i + 1} (Golden Sample):`,
           goldenFiles[i],
         );
       }
+      this.logStage('image preparation', startedAt, `${parts.length} prompt parts`);
 
       if (goldenFiles[0] && params.rules.length > 0) {
         try {
@@ -431,6 +560,7 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
           await addBufferPart(
             'Archivo de Referencia Anotado (Golden Sample con zonas marcadas):',
             annotatedGoldenBuffer,
+            'image/jpeg',
           );
         } catch (error) {
           console.warn('[CVQA] Failed to build annotated golden sample overlay', error);
@@ -466,8 +596,12 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
         },
       };
 
-      const result = await this.generateContentWithRetry(request);
-      const responseText = result.response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+      const response = await this.withCompareTimeout(async () => {
+        const result = await this.generateContentWithRetry(request);
+        return result.response;
+      });
+      this.logStage('vertex compare', startedAt);
+      const responseText = response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
 
       let jsonResult;
       try {
@@ -525,6 +659,9 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
           'El servicio de validación por IA está saturado. Intenta de nuevo en unos segundos.',
           HttpStatus.TOO_MANY_REQUESTS,
         );
+      }
+      if (error instanceof HttpException) {
+        throw error;
       }
       throw new InternalServerErrorException(
         'Error en la validación por IA: ' + errorMessage,
