@@ -48,11 +48,26 @@ export class CvqaController {
   @Post('vision/validate-rules')
   @ApiOperation({ summary: 'Pre-validate physical and semantic logic of AI visual rules' })
   @ApiResponse({ status: 200, description: 'Rules validation complete' })
-  async validateRulesLogic(@Body('rules') rules: any[]) {
-    if (!rules || !Array.isArray(rules)) {
+  @UseInterceptors(FileFieldsInterceptor([
+    { name: 'reference_image', maxCount: 1 },
+  ]))
+  async validateRulesLogic(
+    @UploadedFiles() files: { reference_image?: Express.Multer.File[] },
+    @Body('payload') payloadString?: string,
+    @Body('rules') legacyRules?: any[],
+  ) {
+    let payload: Record<string, any> = { rules: legacyRules };
+    if (payloadString) {
+      try {
+        payload = JSON.parse(payloadString);
+      } catch (error) {
+        throw new BadRequestException('Invalid payload JSON');
+      }
+    }
+    if (!payload?.rules || !Array.isArray(payload.rules)) {
       throw new BadRequestException('Rules payload must be an array');
     }
-    return this.cvqaService.validateRulesLogic(rules);
+    return this.cvqaService.validateRulesLogic(payload, files?.reference_image?.[0]);
   }
 
   @Post('vision/feedback')
