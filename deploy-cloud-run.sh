@@ -13,6 +13,24 @@ if [[ ! -f "${DEPLOY_ENV_FILE}" ]]; then
   exit 1
 fi
 
+APP_ENVIRONMENT_VALUE="$(grep -E '^APP_ENVIRONMENT:' "${DEPLOY_ENV_FILE}" | head -n1 | cut -d':' -f2- | tr -d '\"[:space:]')"
+DATABASE_SCHEMA_VALUE="$(grep -E '^DATABASE_SCHEMA:' "${DEPLOY_ENV_FILE}" | head -n1 | cut -d':' -f2- | tr -d '\"[:space:]')"
+
+if [[ -z "${APP_ENVIRONMENT_VALUE}" || -z "${DATABASE_SCHEMA_VALUE}" ]]; then
+  echo "APP_ENVIRONMENT and DATABASE_SCHEMA must both be set in ${DEPLOY_ENV_FILE}."
+  exit 1
+fi
+
+if [[ "${SERVICE_NAME}" == *-test ]]; then
+  [[ "${PROJECT_ID}" == "mia-web-test-env" ]] || { echo "Test CVQA services must deploy to mia-web-test-env."; exit 1; }
+  [[ "${APP_ENVIRONMENT_VALUE}" == "test" ]] || { echo "Test CVQA services must use APP_ENVIRONMENT=test."; exit 1; }
+  [[ "${DATABASE_SCHEMA_VALUE}" == "mia-test" ]] || { echo "Test CVQA services must use DATABASE_SCHEMA=mia-test."; exit 1; }
+else
+  [[ "${PROJECT_ID}" == "mia-production-project" ]] || { echo "Production CVQA services must deploy to mia-production-project."; exit 1; }
+  [[ "${APP_ENVIRONMENT_VALUE}" == "prod" ]] || { echo "Production CVQA services must use APP_ENVIRONMENT=prod."; exit 1; }
+  [[ "${DATABASE_SCHEMA_VALUE}" != "mia-test" ]] || { echo "Production CVQA services cannot use DATABASE_SCHEMA=mia-test."; exit 1; }
+fi
+
 echo "Deploying ${SERVICE_NAME} to ${REGION} in project ${PROJECT_ID}..."
 echo "Building image via Cloud Build..."
 gcloud builds submit --tag "${IMAGE_NAME}" .

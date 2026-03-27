@@ -1,4 +1,5 @@
 NODE_ENV: production
+APP_ENVIRONMENT: prod
 DATABASE_SCHEMA: your-schema
 DATABASE_URL: "postgresql://user:password@host:6543/postgres?pgbouncer=true&sslmode=require&schema=your-schema"
 DATABASE_URL_DIRECT: "postgresql://user:password@host:5432/postgres?sslmode=require&schema=your-schema"

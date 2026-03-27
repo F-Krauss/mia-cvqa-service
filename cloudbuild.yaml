@@ -1,4 +1,28 @@
 steps:
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    entrypoint: 'bash'
+    args:
+      - '-ceu'
+      - |
+        branch="${BRANCH_NAME:-}"
+        service="${_SERVICE_NAME}"
+        project="${_PROJECT_ID}"
+        app_env="${_APP_ENVIRONMENT}"
+        schema="${_DATABASE_SCHEMA}"
+
+        if [[ "${branch}" == "test" ]]; then
+          [[ "${service}" == *-test ]] || { echo "test branch must deploy a *-test service"; exit 1; }
+          [[ "${project}" == "mia-web-test-env" ]] || { echo "test branch must deploy to mia-web-test-env"; exit 1; }
+          [[ "${app_env}" == "test" ]] || { echo "test branch must use _APP_ENVIRONMENT=test"; exit 1; }
+          [[ "${schema}" == "mia-test" ]] || { echo "test branch must use _DATABASE_SCHEMA=mia-test"; exit 1; }
+        elif [[ "${branch}" == "main" ]]; then
+          [[ "${service}" != *-test ]] || { echo "main branch cannot deploy a *-test service"; exit 1; }
+          [[ "${project}" == "mia-production-project" ]] || { echo "main branch must deploy to mia-production-project"; exit 1; }
+          [[ "${app_env}" == "prod" ]] || { echo "main branch must use _APP_ENVIRONMENT=prod"; exit 1; }
+          [[ "${schema}" != "mia-test" ]] || { echo "main branch cannot use _DATABASE_SCHEMA=mia-test"; exit 1; }
+        fi
+    id: 'ValidateBranchContract'
+
   # 1. Build the container image
   - name: 'gcr.io/cloud-builders/docker'
     dir: 'mia-cvqa-service'
@@ -27,6 +51,7 @@ steps:
       - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/cloud-run-source-deploy/mia-web-app/${_SERVICE_NAME}:$COMMIT_SHA'
       - '--region'
       - '${_REGION}'
+      - '--update-env-vars=APP_ENVIRONMENT=${_APP_ENVIRONMENT},DATABASE_SCHEMA=${_DATABASE_SCHEMA}'
       - '--quiet'
     id: 'Deploy'
 
@@ -37,6 +62,8 @@ substitutions:
   _PROJECT_ID: mia-production-project
   _REGION: northamerica-south1
   _SERVICE_NAME: mia-cvqa-service
+  _APP_ENVIRONMENT: prod
+  _DATABASE_SCHEMA: mia
 
 options:
   logging: CLOUD_LOGGING_ONLY
