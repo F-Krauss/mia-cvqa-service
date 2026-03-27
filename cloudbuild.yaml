@@ -25,7 +25,6 @@ steps:
 
   # 1. Build the container image
   - name: 'gcr.io/cloud-builders/docker'
-    dir: 'mia-cvqa-service'
     args:
       - 'build'
       - '-t'
