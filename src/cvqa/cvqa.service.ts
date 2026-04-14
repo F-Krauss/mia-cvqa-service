@@ -49,6 +49,15 @@ type PercentRegion = {
   label?: string;
 };
 
+type RuleSemanticTarget = {
+  objectName?: string;
+  objectClass?: string;
+  attributeFocus?: string;
+  equivalenceHint?: string;
+  expectedSignals: string[];
+  failureSignals: string[];
+};
+
 type VisionValidationRule = {
   id: string;
   name?: string;
@@ -67,6 +76,7 @@ type VisionValidationRule = {
     url?: string;
     mimeType?: string;
   }>;
+  semanticTarget?: RuleSemanticTarget;
   viewConstraint: ValidationViewConstraint;
   humanReviewRequiredWhen: string[];
 };
@@ -159,6 +169,42 @@ const VALID_VIEW_CONSTRAINTS: ValidationViewConstraint[] = [
   'multi_view_required',
 ];
 
+const CHECK_TYPE_LABELS: Record<ValidationCheckType, string> = {
+  presence: 'Presencia',
+  absence: 'Ausencia',
+  alignment: 'Alineacion',
+  flushness: 'Nivel relativo',
+  count: 'Conteo',
+  color_mark: 'Color o marca',
+  orientation: 'Orientacion',
+  surface_condition: 'Condicion superficial',
+  text_match: 'Texto',
+  gap: 'Separacion',
+};
+
+const CHECK_TYPE_PLAYBOOK: Record<ValidationCheckType, string> = {
+  presence:
+    'Confirma que el objeto o rasgo objetivo existe y es claramente visible en la evidencia seleccionada.',
+  absence:
+    'Confirma que el objeto o rasgo objetivo NO esta presente en la zona esperada; cualquier aparicion relevante implica FAIL.',
+  alignment:
+    'Compara ejes, paralelismo y centrado relativo respecto de bordes o referencias geometricas cercanas.',
+  flushness:
+    'Evalua el nivel relativo entre dos superficies: FAIL si hay relieve visible, hundimiento visible o discontinuidad de plano no permitida.',
+  count:
+    'Cuenta instancias del objetivo definido y compara contra la cantidad esperada; faltantes, excedentes o duplicados relevantes implican FAIL.',
+  color_mark:
+    'Verifica color o marca esperada con tolerancia a iluminacion; FAIL si el color/marca requerido no existe o es claramente incorrecto.',
+  orientation:
+    'Valida direccion, giro o sentido del elemento; FAIL si la orientacion funcional no coincide con la esperada.',
+  surface_condition:
+    'Evalua condicion de superficie (golpes, rayas, rebabas, deformaciones, desgaste, contaminacion) segun el criterio de la regla.',
+  text_match:
+    'Lee y compara texto, codigo o simbolo esperado; FAIL si no coincide contenido, formato critico o legibilidad requerida.',
+  gap:
+    'Evalua separacion/holgura entre elementos; FAIL si el espacio observado queda fuera del rango permitido por la regla.',
+};
+
 const STATUS_COLOR_MAP: Record<ValidationStatus, string> = {
   PASS: '#16a34a',
   FAIL: '#dc2626',
@@ -239,6 +285,54 @@ const normalizeStringArray = (value: unknown): string[] =>
     ? value.map((entry) => String(entry || '').trim()).filter(Boolean)
     : [];
 
+const normalizeRuleSemanticTarget = (
+  value: unknown,
+  fallback: {
+    name?: string;
+    description?: string;
+    checkType?: ValidationCheckType;
+    passCriteria?: string;
+  },
+): RuleSemanticTarget | undefined => {
+  const raw = value && typeof value === 'object' ? (value as any) : {};
+  const objectName =
+    normalizeString(raw.objectName) ||
+    normalizeString(fallback.name) ||
+    normalizeString(fallback.description);
+  const objectClass = normalizeString(raw.objectClass);
+  const attributeFocus =
+    normalizeString(raw.attributeFocus) ||
+    (fallback.checkType ? CHECK_TYPE_LABELS[fallback.checkType] : undefined);
+  const equivalenceHint = normalizeString(raw.equivalenceHint);
+  const expectedSignals = normalizeStringArray(raw.expectedSignals).slice(0, 8);
+  const failureSignals = normalizeStringArray(raw.failureSignals).slice(0, 8);
+
+  if (expectedSignals.length === 0) {
+    const passCriteria = normalizeString(fallback.passCriteria);
+    if (passCriteria) expectedSignals.push(passCriteria);
+  }
+
+  if (
+    !objectName &&
+    !objectClass &&
+    !attributeFocus &&
+    !equivalenceHint &&
+    expectedSignals.length === 0 &&
+    failureSignals.length === 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    objectName,
+    objectClass,
+    attributeFocus,
+    equivalenceHint,
+    expectedSignals,
+    failureSignals,
+  };
+};
+
 const normalizeFileName = (value: string | undefined) =>
   String(value || '')
     .trim()
@@ -301,8 +395,16 @@ const normalizeVisionValidationRules = (rules: unknown): VisionValidationRule[] 
       const description = normalizeString(rule.description) || '';
       const name = normalizeString(rule.name);
       const severity = normalizeSeverity(rule.severity);
+      const checkType = normalizeCheckType(rule.checkType);
+      const passCriteria = normalizeString(rule.passCriteria);
       const viewConstraint = normalizeViewConstraint(rule.viewConstraint);
       const strictnessPercent = normalizePercentNumber(rule.strictnessPercent);
+      const semanticTarget = normalizeRuleSemanticTarget(rule.semanticTarget, {
+        name,
+        description,
+        checkType,
+        passCriteria,
+      });
       const highlight =
         rule.highlight && typeof rule.highlight === 'object'
           ? {
@@ -330,8 +432,8 @@ const normalizeVisionValidationRules = (rules: unknown): VisionValidationRule[] 
         name,
         description: description || name || `Regla ${index + 1}`,
         severity,
-        checkType: normalizeCheckType(rule.checkType),
-        passCriteria: normalizeString(rule.passCriteria),
+        checkType,
+        passCriteria,
         strictnessPercent:
           strictnessPercent ??
           (rule?.thresholds &&
@@ -357,6 +459,7 @@ const normalizeVisionValidationRules = (rules: unknown): VisionValidationRule[] 
               )
               .filter(Boolean)
           : [],
+        semanticTarget,
         viewConstraint,
         humanReviewRequiredWhen:
           normalizeStringArray(rule.humanReviewRequiredWhen).length > 0
@@ -1048,6 +1151,32 @@ export class CvqaService {
     };
   }
 
+  private buildCheckTypePlaybook(rules: VisionValidationRule[]) {
+    const usedCheckTypes = [...new Set(rules.map((rule) => rule.checkType))];
+    if (usedCheckTypes.length === 0) return '';
+    return usedCheckTypes
+      .map(
+        (checkType, index) =>
+          `${index + 1}. ${CHECK_TYPE_LABELS[checkType]} (${checkType}): ${CHECK_TYPE_PLAYBOOK[checkType]}`,
+      )
+      .join('\n');
+  }
+
+  private buildRuleSemanticTarget(rule: VisionValidationRule) {
+    const semantic = rule.semanticTarget;
+    return {
+      objectName: semantic?.objectName || rule.name || rule.description,
+      objectClass: semantic?.objectClass || 'objeto',
+      attributeFocus:
+        semantic?.attributeFocus || CHECK_TYPE_LABELS[rule.checkType],
+      equivalenceHint:
+        semantic?.equivalenceHint ||
+        'Ubica el equivalente funcional aunque cambien angulo, escala, encuadre o iluminacion.',
+      expectedSignals: semantic?.expectedSignals || [],
+      failureSignals: semantic?.failureSignals || [],
+    };
+  }
+
   private buildRulePromptSummary(rules: VisionValidationRule[]) {
     return JSON.stringify(
       rules.map((rule) => ({
@@ -1068,8 +1197,10 @@ export class CvqaService {
                 : rule.strictnessPercent >= 35
                   ? 'Flexible: acepta pequeñas diferencias visuales.'
                   : 'Muy flexible: acepta variaciones visibles si la regla sigue cumpliéndose.',
+        checkTypeGuidance: CHECK_TYPE_PLAYBOOK[rule.checkType],
         viewConstraint: rule.viewConstraint,
         humanReviewRequiredWhen: rule.humanReviewRequiredWhen,
+        semanticTarget: this.buildRuleSemanticTarget(rule),
         ruleZoneAnchor: getRuleAnchorRegion(rule),
         regionSummary: formatRuleRegionSummary(rule),
         negativeReferenceFileNames: (rule.negativeReferences || [])
@@ -1081,7 +1212,47 @@ export class CvqaService {
     );
   }
 
-  private buildQualityPrompt(params: any, rules: VisionValidationRule[]) {
+  private buildLocalizationPrompt(params: any, rules: VisionValidationRule[]) {
+    const specName = params.specName || params.modelName || 'manual';
+    const subjectLabel =
+      normalizeString(params.subjectLabel) ||
+      normalizeString(params.modelName) ||
+      'Elemento inspeccionado';
+    const notes = normalizeString(params.notes);
+    const rulesJson = this.buildRulePromptSummary(rules);
+    const checkTypePlaybook = this.buildCheckTypePlaybook(rules);
+
+    return `Eres un inspector de calidad industrial especializado en localizacion visual multimodal.
+
+OBJETIVO DE ESTA ETAPA:
+- SOLO localiza por regla la zona equivalente del objetivo en las fotos del operador.
+- NO decidas PASS/FAIL final en esta etapa.
+
+REGLAS DE LOCALIZACION:
+- Las fotos de inspeccion pueden tener perspectiva, escala, encuadre e iluminacion diferentes a la referencia.
+- No copies coordenadas del golden sample; encuentra el equivalente funcional en la foto evaluada.
+- Usa contexto de semanticTarget, descripcion, passCriteria, ROI y referencias negativas para localizar con precision.
+- Devuelve matchedRuleRegion en porcentajes 0..100 de la foto evaluada.
+- Prefiere cajas (x,y,w,h) ajustadas. Usa polygon solo si el contorno es irregular.
+
+PLAYBOOK GLOBAL POR TIPO DE CHEQUEO:
+${checkTypePlaybook || '- Usa guias visuales generales y coherentes con la regla estructurada.'}
+
+CONTEXTO:
+- Elemento inspeccionado: ${subjectLabel}
+- Procedimiento/modelo: ${specName}
+${notes ? `- Notas: ${notes}` : ''}
+
+REGLAS ESTRUCTURADAS:
+${rulesJson}
+`;
+  }
+
+  private buildQualityPrompt(
+    params: any,
+    rules: VisionValidationRule[],
+    localizationHints?: unknown,
+  ) {
     const specName = params.specName || params.modelName || 'manual';
     const subjectLabel =
       normalizeString(params.subjectLabel) ||
@@ -1093,6 +1264,11 @@ export class CvqaService {
       Number(params.requiredEvidencePhotos) || 1,
     );
     const rulesJson = this.buildRulePromptSummary(rules);
+    const checkTypePlaybook = this.buildCheckTypePlaybook(rules);
+    const localizationHintsText =
+      Array.isArray(localizationHints) && localizationHints.length > 0
+        ? JSON.stringify(localizationHints, null, 2)
+        : '[]';
 
     return `Eres un inspector de calidad industrial especializado en validación visual multimodal.
 
@@ -1107,24 +1283,32 @@ EVIDENCIA DISPONIBLE:
 - "Referencia negativa N" = ejemplo de incumplimiento. Úsalos para entender cómo se ve un FAIL.
 - "Archivo de Referencia Anotado" = mapa visual de las zonas marcadas por el supervisor.
 
+LOCALIZACIONES PREVIAS (ETAPA 1):
+${localizationHintsText}
+- Usa estas localizaciones como punto de partida; si detectas inconsistencia visual corrígela y explica el ajuste.
+
 INSTRUCCIONES DE DECISIÓN:
-- IMPORTANTE SOBRE POSICIÓN Y PERSPECTIVA: Las fotos a inspeccionar pueden tener ángulos, escala o perspectivas MUY diferentes a las referencias. Entiende SEMÁNTICAMENTE qué objeto, zona o característica (ej. un tornillo, una muesca, una marca) describe la regla y está delimitado en el golden sample (si lo hay). Luego, busca visualmente ese mismo objeto exacto en las fotos a inspeccionar, considerando la rotación y el ángulo, y marca sus contornos con la más alta precisión posible en \`matchedRuleRegion\`. ¡No uses las coordenadas referenciales copiadas literalmente si la perspectiva cambió!
-- IMPORTANTE SOBRE COORDENADAS: Todas las coordenadas (x, y, w, h) y los puntos de "polygon" deben ser valores PORCENTUALES relativos escalados del 0 al 100 respecto al tamaño de la imagen. El (0,0) es la esquina superior izquierda y (100,100) la esquina inferior derecha.
-- Evalúa cada regla por separado.
-- Usa la mejor foto del operador para cada regla según su viewConstraint.
-- Si una regla tiene viewConstraint = "multi_view_required", debes usar al menos 2 fotos del operador. Si no hay suficientes vistas útiles, esa regla queda en REVIEW.
-- Si una regla crítica falla claramente, el overallStatus debe ser FAIL.
-- Si la imagen es ambigua, borrosa, con mala iluminación, o la vista no permite comprobar la regla, usa REVIEW.
-- Nunca conviertas automáticamente un FAIL en PASS.
-- IMPORTANTE SOBRE FALLAS DE SUPERFICIE: Si una regla requiere que algo esté "al ras" o no sobresalga (flush) como un tornillo o perno, examina el volumen, la sombra y el relieve con extrema severidad. Si sobresale visiblemente o no está perfectamente introducido en la base, el estado es FAIL de inmediato, no importan otras condiciones (ej. tener el marcador correcto no hace que apruebe si el tornillo sobresale).
-- Cuando la regla incluya ROI o zona marcada, esa zona es el ancla semántica obligatoria de la regla.
-- Para cada regla, primero mapea la zona funcional completa en la foto del operador y devuélvela como matchedRuleRegion. PREFIERE CAJAS DELIMITADORAS (rectángulos). Usa los campos \`x, y\` (esquina superior-izquierda) y \`w, h\` (ancho y alto relativos) para envolver el objeto clave (ej. el tornillo completo) de la manera más perfecta, justa y ajustada posible. Abstente de usar el array de "polygon" porque suele producir formas inexactas, a menos que el contorno sea extremadamente irregular.
-- matchedRuleRegion no puede ser solo un parche pequeño de defecto; debe cubrir la zona completa equivalente a la regla.
-- Si detectas incumplimiento puntual dentro de esa zona, reporta además defectRegion con la subzona específica (preferentemente usando también \`x, y, w, h\` muy ajustados).
-- En el campo "reason", debes explicar siempre de forma clara y concisa por qué la regla fue evaluada como PASS, FAIL o REVIEW. Si es FAIL, justifica exactamente el defecto encontrado.
-- Si no puedes mapear con confianza la zona completa por perspectiva/oclusión/calidad, devuelve REVIEW y explica la causa.
-- Para color_mark, permite pequeñas variaciones por iluminación, pero no apruebes si la marca no existe o el color es claramente incorrecto.
-- Respeta strictnessPercent: 100% significa que no debes tolerar cambios pequeños; 0% significa que puedes tolerar pequeñas variaciones visuales mientras la regla siga cumpliéndose.
+ - IMPORTANTE SOBRE POSICIÓN Y PERSPECTIVA: Las fotos a inspeccionar pueden tener ángulos, escala o perspectivas diferentes a las referencias. No copies coordenadas de la referencia; localiza el equivalente funcional real en cada foto nueva.
+ - IMPORTANTE SOBRE COORDENADAS: Todas las coordenadas (x, y, w, h) y puntos de "polygon" deben estar en porcentaje 0..100 relativos a la foto evaluada. (0,0)=esquina superior izquierda y (100,100)=esquina inferior derecha.
+ - FLUJO OBLIGATORIO EN 2 ETAPAS POR REGLA:
+   1) LOCALIZAR: identifica el objeto/rasgo objetivo de la regla en la foto del operador y devuelve matchedRuleRegion con la zona completa equivalente.
+   2) EVALUAR: sobre esa zona localizada, determina PASS/FAIL/REVIEW según checkType, strictnessPercent, passCriteria y señales visuales observadas.
+ - Evalúa cada regla por separado.
+ - Usa la mejor foto del operador para cada regla según viewConstraint.
+ - Si una regla tiene viewConstraint = "multi_view_required", usa al menos 2 fotos del operador. Si no hay suficientes vistas útiles, la regla queda en REVIEW.
+ - Si una regla crítica falla claramente, overallStatus debe ser FAIL.
+ - Si la imagen es ambigua, borrosa, con mala iluminación, o la vista no permite comprobar la regla, usa REVIEW.
+ - Nunca conviertas automáticamente un FAIL en PASS.
+ - Cuando la regla incluya ROI o zona marcada, úsala como ancla semántica de localización, no como coordenada fija para copiar.
+ - matchedRuleRegion no puede ser solo un parche pequeño: debe cubrir la zona funcional completa equivalente de la regla en la imagen evaluada.
+ - Si detectas incumplimiento puntual dentro de esa zona, reporta además defectRegion con la subzona específica.
+ - Prefiere cajas delimitadoras (x,y,w,h) bien ajustadas para robustez. Usa polygon solo cuando la forma sea claramente irregular.
+ - En "reason", explica por qué la regla fue PASS, FAIL o REVIEW. Si es FAIL, justifica el defecto exacto observado.
+ - Si no puedes mapear con confianza la zona completa por perspectiva/oclusión/calidad, devuelve REVIEW y explica la causa.
+ - Respeta strictnessPercent: 100% = tolerancia mínima; 0% = mayor tolerancia visual.
+
+PLAYBOOK GLOBAL POR TIPO DE CHEQUEO:
+${checkTypePlaybook || '- Usa guías visuales generales y coherentes con la regla estructurada.'}
 
 SALIDA OBLIGATORIA:
 - Devuelve solo JSON válido con el esquema solicitado.
@@ -1481,8 +1665,8 @@ ${rulesJson}
       const localCaptureQuality = await this.assessCaptureQuality(objectFiles);
       this.logStage('local quality gate', startedAt);
 
-      const promptText = this.buildQualityPrompt(params, rules);
-      const parts: any[] = [{ text: promptText }];
+      const localizationPromptText = this.buildLocalizationPrompt(params, rules);
+      const evidenceParts: any[] = [];
       const optimizedCache = new Map<
         string,
         Promise<{ buffer: Buffer; mimeType: string }>
@@ -1500,8 +1684,8 @@ ${rulesJson}
       const addFilePart = async (label: string, fileObj?: Express.Multer.File) => {
         if (!fileObj) return;
         const optimized = await getOptimizedImage(fileObj);
-        parts.push({ text: label });
-        parts.push({
+        evidenceParts.push({ text: label });
+        evidenceParts.push({
           inlineData: {
             mimeType: optimized.mimeType,
             data: optimized.buffer.toString('base64'),
@@ -1516,8 +1700,8 @@ ${rulesJson}
       ) => {
         if (!buffer) return;
         const optimized = await this.optimizeImageForVertex(buffer, mimeType);
-        parts.push({ text: label });
-        parts.push({
+        evidenceParts.push({ text: label });
+        evidenceParts.push({
           inlineData: {
             mimeType: optimized.mimeType,
             data: optimized.buffer.toString('base64'),
@@ -1543,7 +1727,7 @@ ${rulesJson}
 
       for (let i = 0; i < goldenFiles.length; i += 1) {
         if (i === 0 && primaryFilesAreIdentical) {
-          parts.push({
+          evidenceParts.push({
             text:
               'Archivo de Referencia 1 (Golden Sample): idéntico byte a byte al objeto real principal. Usa la misma imagen como referencia y evidencia.',
           });
@@ -1586,13 +1770,109 @@ ${rulesJson}
           );
         }
       }
-      this.logStage('image preparation', startedAt, `${parts.length} prompt parts`);
+      this.logStage(
+        'image preparation',
+        startedAt,
+        `${evidenceParts.length} evidence parts`,
+      );
+
+      const localizationRequest = {
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: localizationPromptText }, ...evidenceParts],
+          },
+        ],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT' as any,
+            properties: {
+              localizationSummary: { type: 'STRING' as any },
+              ruleLocalizations: {
+                type: 'ARRAY' as any,
+                items: {
+                  type: 'OBJECT' as any,
+                  properties: {
+                    ruleId: { type: 'STRING' as any },
+                    sourceIndices: {
+                      type: 'ARRAY' as any,
+                      items: { type: 'NUMBER' as any },
+                    },
+                    localizationConfidence: { type: 'NUMBER' as any },
+                    localizationReason: { type: 'STRING' as any },
+                    matchedRuleRegion: {
+                      type: 'OBJECT' as any,
+                      properties: {
+                        x: { type: 'NUMBER' as any },
+                        y: { type: 'NUMBER' as any },
+                        w: { type: 'NUMBER' as any },
+                        h: { type: 'NUMBER' as any },
+                        label: { type: 'STRING' as any },
+                        color: { type: 'STRING' as any },
+                        regionRole: {
+                          type: 'STRING' as any,
+                          enum: ['rule_zone', 'defect_zone', 'context_region'],
+                        },
+                        polygon: {
+                          type: 'ARRAY' as any,
+                          items: {
+                            type: 'OBJECT' as any,
+                            properties: {
+                              x: { type: 'NUMBER' as any },
+                              y: { type: 'NUMBER' as any },
+                            },
+                            required: ['x', 'y'],
+                          },
+                        },
+                      },
+                      required: ['x', 'y', 'w', 'h'],
+                    },
+                  },
+                  required: ['ruleId', 'sourceIndices', 'matchedRuleRegion'],
+                },
+              },
+            },
+            required: ['ruleLocalizations'],
+          },
+          temperature: 0,
+        },
+      };
+
+      const { response: localizationResponse, modelId: localizationModelId } =
+        await this.withCompareTimeout(async () =>
+          this.generateContentWithFallback(localizationRequest),
+        );
+      this.logStage('vertex localization', startedAt, localizationModelId);
+      const localizationText =
+        localizationResponse.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+
+      let localizationJson: any;
+      try {
+        localizationJson = JSON.parse(localizationText);
+      } catch {
+        console.warn('[CVQA] Localization parse error:', localizationText);
+        localizationJson = {
+          localizationSummary:
+            'No fue posible interpretar localizaciones iniciales del modelo.',
+          ruleLocalizations: [],
+        };
+      }
+
+      const localizationHints = Array.isArray(localizationJson?.ruleLocalizations)
+        ? localizationJson.ruleLocalizations
+        : [];
+      const promptText = this.buildQualityPrompt(
+        params,
+        rules,
+        localizationHints,
+      );
 
       const request = {
         contents: [
           {
             role: 'user',
-            parts,
+            parts: [{ text: promptText }, ...evidenceParts],
           },
         ],
         generationConfig: {
@@ -1745,7 +2025,11 @@ ${rulesJson}
       const { response, modelId } = await this.withCompareTimeout(async () =>
         this.generateContentWithFallback(request),
       );
-      this.logStage('vertex compare', startedAt, modelId);
+      this.logStage(
+        'vertex compare',
+        startedAt,
+        `${modelId} (localizations: ${localizationHints.length})`,
+      );
       const responseText =
         response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
 
@@ -1770,8 +2054,39 @@ ${rulesJson}
         localCaptureQuality,
         jsonResult.captureQuality,
       );
+      const localizationByRuleId = new Map<string, any>();
+      for (const entry of localizationHints) {
+        if (!entry || typeof entry !== 'object') continue;
+        const key =
+          normalizeString((entry as any).ruleId) ||
+          normalizeString((entry as any).id) ||
+          normalizeString((entry as any).name);
+        if (key) localizationByRuleId.set(key, entry);
+      }
+
+      const rawRuleResults = Array.isArray(jsonResult.ruleResults)
+        ? jsonResult.ruleResults
+        : [];
+      const mergedRawRuleResults = rawRuleResults.map((entry: any) => {
+        const key =
+          normalizeString(entry?.ruleId) ||
+          normalizeString(entry?.id) ||
+          normalizeString(entry?.name);
+        const localization = key ? localizationByRuleId.get(key) : null;
+        if (!localization) return entry;
+        return {
+          ...entry,
+          sourceIndices:
+            Array.isArray(entry?.sourceIndices) && entry.sourceIndices.length > 0
+              ? entry.sourceIndices
+              : localization.sourceIndices,
+          matchedRuleRegion:
+            entry?.matchedRuleRegion || localization.matchedRuleRegion,
+        };
+      });
+
       const ruleResults = this.normalizeModelRuleResults(
-        jsonResult.ruleResults,
+        mergedRawRuleResults,
         rules,
         objectFiles.length,
       );
@@ -1874,6 +2189,12 @@ Verifica si existe alguno de estos problemas:
 3. Reglas que deberían ser multiángulo pero están marcadas como una sola vista.
 4. Zonas marcadas incoherentes con la regla: apuntan al lugar equivocado, están vacías, demasiado amplias o demasiado pequeñas.
 5. La foto base no es suficiente para validar esas reglas por ángulo, resolución, iluminación o encuadre.
+6. Reglas sin objetivo semántico claro (qué objeto localizar y qué atributo validar) que impedirían una evaluación robusta en productos distintos.
+
+Para cada regla, revisa que:
+- El checkType esté alineado con el criterio escrito.
+- Exista suficiente contexto para localizar el equivalente del objetivo en nuevas fotos aunque cambie la perspectiva.
+- El criterio de PASS/FAIL sea medible visualmente y no ambiguo.
 
 Reglas estructuradas:
 ${rulesText}
