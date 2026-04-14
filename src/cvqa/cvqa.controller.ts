@@ -25,14 +25,16 @@ export class CvqaController {
   @ApiResponse({ status: 200, description: 'Comparison complete' })
   @UseInterceptors(FileFieldsInterceptor([
     { name: 'manual', maxCount: 1 },
-    { name: 'object_file', maxCount: 4 },
-    { name: 'golden', maxCount: 4 },
+    { name: 'object_file', maxCount: 6 },
+    { name: 'golden', maxCount: 6 },
+    { name: 'negative_reference', maxCount: 8 },
   ]))
   async compareVisionQuality(
     @UploadedFiles() files: {
       manual?: Express.Multer.File[],
       object_file?: Express.Multer.File[],
-      golden?: Express.Multer.File[]
+      golden?: Express.Multer.File[],
+      negative_reference?: Express.Multer.File[],
     },
     @Body('params') paramsString: string,
     @Req() req: any,
@@ -58,7 +60,6 @@ export class CvqaController {
   ) {
     let payload: {
       rules: any[];
-      referenceImageDescription?: string;
       subjectLabel?: string;
     } = {
       rules: Array.isArray(legacyRules) ? legacyRules : [],
@@ -68,10 +69,6 @@ export class CvqaController {
         const parsed = JSON.parse(payloadString) as Record<string, any>;
         payload = {
           rules: Array.isArray(parsed?.rules) ? parsed.rules : [],
-          referenceImageDescription:
-            typeof parsed?.referenceImageDescription === 'string'
-              ? parsed.referenceImageDescription
-              : undefined,
           subjectLabel:
             typeof parsed?.subjectLabel === 'string'
               ? parsed.subjectLabel

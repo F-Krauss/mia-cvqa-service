@@ -5,10 +5,7 @@ import {
   Injectable,
   InternalServerErrorException,
 } from '@nestjs/common';
-import {
-  VertexAI,
-  GenerativeModelPreview,
-} from '@google-cloud/vertexai';
+import { VertexAI, GenerativeModelPreview } from '@google-cloud/vertexai';
 import sharp from 'sharp';
 import { createHash } from 'node:crypto';
 import { resolveVertexLocation } from '../common/vertex-location';
@@ -19,37 +16,314 @@ import {
 } from '../common/vertex-retry';
 import { PrismaService } from '../prisma/prisma.service';
 
-const MODEL_ID =
+type ValidationStatus = 'PASS' | 'FAIL' | 'REVIEW';
+type ValidationSeverity = 'critical' | 'major' | 'minor';
+type ValidationCheckType =
+  | 'presence'
+  | 'absence'
+  | 'alignment'
+  | 'flushness'
+  | 'count'
+  | 'color_mark'
+  | 'orientation'
+  | 'surface_condition'
+  | 'text_match'
+  | 'gap';
+type ValidationViewConstraint =
+  | 'front'
+  | 'side'
+  | 'top'
+  | 'any'
+  | 'multi_view_required';
+
+type PercentPoint = { x: number; y: number };
+type PercentRegion = {
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+  polygon?: PercentPoint[];
+  color?: string;
+  label?: string;
+};
+
+type VisionValidationRule = {
+  id: string;
+  name?: string;
+  description: string;
+  severity: ValidationSeverity;
+  checkType: ValidationCheckType;
+  passCriteria?: string;
+  color?: string;
+  highlight?: { x?: number; y?: number; w?: number; h?: number };
+  paths?: Array<PercentPoint[]>;
+  roi?: Array<PercentPoint[]>;
+  negativeReferences?: Array<{
+    id?: string;
+    fileName?: string;
+    url?: string;
+    mimeType?: string;
+  }>;
+  viewConstraint: ValidationViewConstraint;
+  thresholds: {
+    passMin: number;
+    failMax: number;
+    reviewBelow: number;
+  };
+  allowances?: Record<string, unknown> | string | null;
+  humanReviewRequiredWhen: string[];
+};
+
+type CaptureQualityAssessment = {
+  status: ValidationStatus;
+  blur: number | null;
+  exposure: number | null;
+  framing: number | null;
+  occlusion: number | null;
+  issues: string[];
+  recommendedAction?: string;
+};
+
+type RuleEvaluation = {
+  ruleId: string;
+  name?: string;
+  status: ValidationStatus;
+  confidence: number | null;
+  reason?: string;
+  expectedState?: string;
+  observedState?: string;
+  sourceIndices: number[];
+  evidenceRegions: PercentRegion[];
+};
+
+type CompareResponse = {
+  status: ValidationStatus;
+  overallStatus: ValidationStatus;
+  summary: string;
+  issues: string[];
+  missing: string[];
+  confidence: number | null;
+  overallConfidence: number | null;
+  checks: Record<string, boolean> | null;
+  captureQuality: CaptureQualityAssessment;
+  ruleResults: RuleEvaluation[];
+  annotatedImage?: string;
+  annotatedImages?: Array<{
+    url: string;
+    label?: string;
+    sourceIndex?: number;
+  }>;
+  recommendedAction?: string;
+};
+
+type ModelClientEntry = {
+  modelId: string;
+  client: GenerativeModelPreview;
+};
+
+const DEFAULT_PRIMARY_MODEL_ID =
   process.env.CVQA_MODEL_ID ||
   process.env.VERTEX_MODEL_ID ||
-  'gemini-2.5-flash';
+  'gemini-3-flash-preview';
+const DEFAULT_FALLBACK_MODEL_IDS = ['gemini-2.5-flash'];
 const DEFAULT_COMPARE_TIMEOUT_MS = 55_000;
 const SMALL_IMAGE_BYTES_THRESHOLD = 256 * 1024;
 const LIGHT_IMAGE_MAX_DIMENSION = 1024;
 const DEFAULT_IMAGE_MAX_DIMENSION = 1536;
+const DEFAULT_REVIEW_CONDITIONS = [
+  'occlusion',
+  'blur',
+  'mala iluminación',
+  'vista incorrecta',
+  'confianza insuficiente',
+];
 
-type VisionValidationRule = {
-  id?: string;
-  description?: string;
-  color?: string;
-  highlight?: { x?: number; y?: number; w?: number; h?: number };
-  paths?: Array<Array<{ x?: number; y?: number }>>;
+const VALID_STATUSES: ValidationStatus[] = ['PASS', 'FAIL', 'REVIEW'];
+const VALID_SEVERITIES: ValidationSeverity[] = ['critical', 'major', 'minor'];
+const VALID_CHECK_TYPES: ValidationCheckType[] = [
+  'presence',
+  'absence',
+  'alignment',
+  'flushness',
+  'count',
+  'color_mark',
+  'orientation',
+  'surface_condition',
+  'text_match',
+  'gap',
+];
+const VALID_VIEW_CONSTRAINTS: ValidationViewConstraint[] = [
+  'front',
+  'side',
+  'top',
+  'any',
+  'multi_view_required',
+];
+
+const STATUS_COLOR_MAP: Record<ValidationStatus, string> = {
+  PASS: '#16a34a',
+  FAIL: '#dc2626',
+  REVIEW: '#f59e0b',
 };
 
-const clampPercent = (value: number) => Math.max(0, Math.min(100, value));
+const getDefaultThresholds = (
+  severity: ValidationSeverity,
+): VisionValidationRule['thresholds'] => {
+  switch (severity) {
+    case 'critical':
+      return { passMin: 0.9, failMax: 0.74, reviewBelow: 0.89 };
+    case 'minor':
+      return { passMin: 0.8, failMax: 0.64, reviewBelow: 0.79 };
+    case 'major':
+    default:
+      return { passMin: 0.85, failMax: 0.69, reviewBelow: 0.84 };
+  }
+};
+
+const parseCsvList = (value: string | undefined, fallback: string[]) => {
+  const entries = String(value || '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return entries.length > 0 ? entries : fallback;
+};
+
+const buildModelIdChain = () => {
+  const configuredFallbacks = parseCsvList(
+    process.env.CVQA_FALLBACK_MODEL_IDS,
+    DEFAULT_FALLBACK_MODEL_IDS,
+  );
+  return [DEFAULT_PRIMARY_MODEL_ID, ...configuredFallbacks].filter(
+    (value, index, array) => value && array.indexOf(value) === index,
+  );
+};
+
+const modelRequiresGlobalEndpoint = (modelId: string) =>
+  /^gemini-3/i.test(String(modelId || '').trim());
+
+const parsePositiveInt = (value: string | undefined, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+};
+
+const clampNumber = (value: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, value));
+
+const clampPercent = (value: number) => clampNumber(value, 0, 100);
+const clampScore = (value: number) => clampNumber(value, 0, 1);
 
 const normalizePercentNumber = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? clampPercent(parsed) : undefined;
 };
 
+const normalizeScore = (value: unknown) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? clampScore(parsed) : undefined;
+};
+
+const normalizeString = (value: unknown) => {
+  const parsed = typeof value === 'string' ? value.trim() : '';
+  return parsed || undefined;
+};
+
+const normalizeStringArray = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.map((entry) => String(entry || '').trim()).filter(Boolean)
+    : [];
+
+const normalizeFileName = (value: string | undefined) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+
+const normalizeStatus = (
+  value: unknown,
+  fallback: ValidationStatus = 'REVIEW',
+): ValidationStatus => {
+  const normalized = String(value || '').trim().toUpperCase();
+  return VALID_STATUSES.includes(normalized as ValidationStatus)
+    ? (normalized as ValidationStatus)
+    : fallback;
+};
+
+const normalizeSeverity = (value: unknown): ValidationSeverity => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return VALID_SEVERITIES.includes(normalized as ValidationSeverity)
+    ? (normalized as ValidationSeverity)
+    : 'major';
+};
+
+const normalizeCheckType = (value: unknown): ValidationCheckType => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return VALID_CHECK_TYPES.includes(normalized as ValidationCheckType)
+    ? (normalized as ValidationCheckType)
+    : 'presence';
+};
+
+const normalizeViewConstraint = (value: unknown): ValidationViewConstraint => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return VALID_VIEW_CONSTRAINTS.includes(normalized as ValidationViewConstraint)
+    ? (normalized as ValidationViewConstraint)
+    : 'any';
+};
+
+const normalizeRulePaths = (value: unknown): Array<PercentPoint[]> => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((path: any) =>
+      Array.isArray(path)
+        ? path
+            .map((point: any) => {
+              const x = normalizePercentNumber(point?.x);
+              const y = normalizePercentNumber(point?.y);
+              return x == null || y == null ? null : { x, y };
+            })
+            .filter((point): point is PercentPoint => Boolean(point))
+        : [],
+    )
+    .filter((path: PercentPoint[]) => path.length > 0);
+};
+
+const normalizeAllowances = (value: unknown) => {
+  if (value == null) return undefined;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return trimmed;
+    }
+  }
+  if (typeof value === 'object') return value as Record<string, unknown>;
+  return undefined;
+};
+
+const normalizeRuleThresholds = (
+  value: unknown,
+  severity: ValidationSeverity,
+): VisionValidationRule['thresholds'] => {
+  const defaults = getDefaultThresholds(severity);
+  if (!value || typeof value !== 'object') return defaults;
+  return {
+    passMin: normalizeScore((value as any).passMin) ?? defaults.passMin,
+    failMax: normalizeScore((value as any).failMax) ?? defaults.failMax,
+    reviewBelow:
+      normalizeScore((value as any).reviewBelow) ?? defaults.reviewBelow,
+  };
+};
+
 const normalizeVisionValidationRules = (rules: unknown): VisionValidationRule[] => {
   if (!Array.isArray(rules)) return [];
   return rules
-    .map((rule: any) => {
+    .map((rule: any, index) => {
       if (!rule || typeof rule !== 'object') return null;
-      const description =
-        typeof rule.description === 'string' ? rule.description.trim() : '';
+      const description = normalizeString(rule.description) || '';
+      const name = normalizeString(rule.name);
+      const severity = normalizeSeverity(rule.severity);
+      const viewConstraint = normalizeViewConstraint(rule.viewConstraint);
       const highlight =
         rule.highlight && typeof rule.highlight === 'object'
           ? {
@@ -67,38 +341,53 @@ const normalizeVisionValidationRules = (rules: unknown): VisionValidationRule[] 
         highlight.h != null
           ? highlight
           : undefined;
-      const paths = Array.isArray(rule.paths)
-        ? rule.paths
-            .map((path: any) =>
-              Array.isArray(path)
-                ? path
-                    .map((point: any) => {
-                      const x = normalizePercentNumber(point?.x);
-                      const y = normalizePercentNumber(point?.y);
-                      return x == null || y == null ? null : { x, y };
-                    })
-                    .filter(Boolean)
-                : [],
-            )
-            .filter((path: any[]) => path.length > 0)
-        : [];
-      if (!description && !normalizedHighlight && paths.length === 0) return null;
+      const roi = normalizeRulePaths(rule.roi);
+      const paths = normalizeRulePaths(rule.paths);
+      if (!description && !name && !normalizedHighlight && roi.length === 0 && paths.length === 0) {
+        return null;
+      }
       return {
-        id: typeof rule.id === 'string' ? rule.id : undefined,
-        description,
-        color: typeof rule.color === 'string' && rule.color.trim() ? rule.color.trim() : '#3b82f6',
+        id: normalizeString(rule.id) || `rule-${index + 1}`,
+        name,
+        description: description || name || `Regla ${index + 1}`,
+        severity,
+        checkType: normalizeCheckType(rule.checkType),
+        passCriteria: normalizeString(rule.passCriteria),
+        color: normalizeString(rule.color) || '#3b82f6',
         highlight: normalizedHighlight,
-        paths,
+        paths: paths.length > 0 ? paths : roi,
+        roi: roi.length > 0 ? roi : paths,
+        negativeReferences: Array.isArray(rule.negativeReferences)
+          ? rule.negativeReferences
+              .map((entry: any) =>
+                entry && typeof entry === 'object'
+                  ? {
+                      id: normalizeString(entry.id),
+                      fileName: normalizeString(entry.fileName),
+                      url: normalizeString(entry.url),
+                      mimeType: normalizeString(entry.mimeType),
+                    }
+                  : null,
+              )
+              .filter(Boolean)
+          : [],
+        viewConstraint,
+        thresholds: normalizeRuleThresholds(rule.thresholds, severity),
+        allowances: normalizeAllowances(rule.allowances),
+        humanReviewRequiredWhen:
+          normalizeStringArray(rule.humanReviewRequiredWhen).length > 0
+            ? normalizeStringArray(rule.humanReviewRequiredWhen)
+            : [...DEFAULT_REVIEW_CONDITIONS],
       };
     })
     .filter(Boolean) as VisionValidationRule[];
 };
 
 const getRulePathBounds = (rule: VisionValidationRule) => {
-  const points = (rule.paths || []).flat();
+  const points = [...(rule.paths || []).flat(), ...(rule.roi || []).flat()];
   if (points.length === 0) return null;
-  const xs = points.map((point) => point.x as number);
-  const ys = points.map((point) => point.y as number);
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
   const minX = Math.min(...xs);
   const maxX = Math.max(...xs);
   const minY = Math.min(...ys);
@@ -121,7 +410,9 @@ const formatRuleRegionSummary = (rule: VisionValidationRule) => {
       `rectángulo x:${Math.round(rule.highlight.x ?? 0)}%, y:${Math.round(rule.highlight.y ?? 0)}%, ancho:${Math.round(rule.highlight.w ?? 0)}%, alto:${Math.round(rule.highlight.h ?? 0)}%`,
     );
   }
-  const strokeCount = (rule.paths || []).filter((path) => path.length > 0).length;
+  const strokeCount = [...(rule.roi || []), ...(rule.paths || [])].filter(
+    (path) => path.length > 0,
+  ).length;
   if (strokeCount > 0) {
     const bounds = getRulePathBounds(rule);
     const strokeSummary = [`${strokeCount} trazo(s)`];
@@ -132,7 +423,9 @@ const formatRuleRegionSummary = (rule: VisionValidationRule) => {
     }
     segments.push(strokeSummary.join(', '));
   }
-  return segments.length > 0 ? ` [Zona marcada: ${segments.join(' | ')}]` : ' [Sin zona marcada]';
+  return segments.length > 0
+    ? ` [Zona marcada: ${segments.join(' | ')}]`
+    : ' [Sin zona marcada]';
 };
 
 const escapeSvgText = (value: string) =>
@@ -143,39 +436,44 @@ const escapeSvgText = (value: string) =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
-const buildRuleOverlaySvg = (
+const buildOverlaySvg = (
   width: number,
   height: number,
-  rules: VisionValidationRule[],
+  regions: PercentRegion[],
 ) => {
-  const shapes = rules
-    .map((rule, index) => {
-      const color = rule.color || '#3b82f6';
+  const shapes = regions
+    .map((region) => {
+      const color = region.color || '#3b82f6';
       const parts: string[] = [];
-      if (rule.highlight) {
-        const x = (rule.highlight.x! / 100) * width;
-        const y = (rule.highlight.y! / 100) * height;
-        const w = (rule.highlight.w! / 100) * width;
-        const h = (rule.highlight.h! / 100) * height;
+      if (
+        region.x != null &&
+        region.y != null &&
+        region.w != null &&
+        region.h != null
+      ) {
+        const x = (region.x / 100) * width;
+        const y = (region.y / 100) * height;
+        const w = (region.w / 100) * width;
+        const h = (region.h / 100) * height;
         parts.push(
-          `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${color}" fill-opacity="0.15" stroke="${color}" stroke-width="6" rx="12" ry="12" />`,
+          `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${color}" fill-opacity="0.12" stroke="${color}" stroke-width="6" rx="14" ry="14" />`,
         );
       }
-      (rule.paths || []).forEach((path) => {
-        if (path.length === 0) return;
-        const points = path
-          .map((point) => `${(point.x! / 100) * width},${(point.y! / 100) * height}`)
+      if (Array.isArray(region.polygon) && region.polygon.length > 0) {
+        const points = region.polygon
+          .map((point) => `${(point.x / 100) * width},${(point.y / 100) * height}`)
           .join(' ');
         parts.push(
-          `<polyline points="${points}" fill="none" stroke="${color}" stroke-opacity="0.85" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />`,
+          `<polygon points="${points}" fill="${color}" fill-opacity="0.12" stroke="${color}" stroke-width="6" stroke-linejoin="round" />`,
         );
-      });
-      const bounds = getRuleFocusBounds(rule);
-      if (bounds) {
-        const labelX = ((bounds.x ?? 0) / 100) * width;
-        const labelY = ((bounds.y ?? 0) / 100) * height;
+      }
+      const labelX = region.x != null ? (region.x / 100) * width : 24;
+      const labelY = region.y != null ? (region.y / 100) * height : 32;
+      if (region.label) {
+        const safeLabel = escapeSvgText(region.label);
+        const labelWidth = Math.max(54, safeLabel.length * 7 + 20);
         parts.push(
-          `<g transform="translate(${labelX}, ${Math.max(32, labelY - 8)})"><rect x="0" y="0" width="40" height="24" rx="12" ry="12" fill="${color}" /><text x="20" y="16" text-anchor="middle" font-size="12" font-family="Arial, sans-serif" font-weight="700" fill="#ffffff">${escapeSvgText(String(index + 1))}</text></g>`,
+          `<g transform="translate(${labelX}, ${Math.max(32, labelY - 8)})"><rect x="0" y="0" width="${labelWidth}" height="26" rx="13" ry="13" fill="${color}" /><text x="${labelWidth / 2}" y="17" text-anchor="middle" font-size="12" font-family="Arial, sans-serif" font-weight="700" fill="#ffffff">${safeLabel}</text></g>`,
         );
       }
       return parts.join('');
@@ -185,24 +483,49 @@ const buildRuleOverlaySvg = (
   return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">${shapes}</svg>`;
 };
 
-const createAnnotatedReferenceBuffer = async (
+const createAnnotatedBuffer = async (
   buffer: Buffer,
-  rules: VisionValidationRule[],
+  regions: PercentRegion[],
 ) => {
-  if (!rules.length) return null;
+  if (!regions.length) return null;
   const metadata = await sharp(buffer).metadata();
   if (!metadata.width || !metadata.height) return null;
-  const overlaySvg = buildRuleOverlaySvg(metadata.width, metadata.height, rules);
+  const overlaySvg = buildOverlaySvg(metadata.width, metadata.height, regions);
   return sharp(buffer)
     .composite([{ input: Buffer.from(overlaySvg), blend: 'over' }])
     .jpeg({ quality: 90 })
     .toBuffer();
 };
 
-const parsePositiveInt = (value: string | undefined, fallback: number) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-};
+const createAnnotatedReferenceBuffer = async (
+  buffer: Buffer,
+  rules: VisionValidationRule[],
+) =>
+  createAnnotatedBuffer(
+    buffer,
+    rules.flatMap((rule, index) => {
+      const bounds = getRuleFocusBounds(rule);
+      const polygonRegions = [...(rule.roi || []), ...(rule.paths || [])].map(
+        (polygon) => ({
+          polygon,
+          color: rule.color || '#3b82f6',
+          label: String(index + 1),
+        }),
+      );
+      return [
+        ...(bounds
+          ? [
+              {
+                ...bounds,
+                color: rule.color || '#3b82f6',
+                label: String(index + 1),
+              },
+            ]
+          : []),
+        ...polygonRegions,
+      ];
+    }),
+  );
 
 const fingerprintBuffer = (buffer: Buffer) =>
   createHash('sha1').update(buffer).digest('hex');
@@ -210,64 +533,166 @@ const fingerprintBuffer = (buffer: Buffer) =>
 const isSvgMimeType = (mimeType?: string) =>
   String(mimeType || '').toLowerCase().includes('svg');
 
+const flattenRuleRegions = (rule: VisionValidationRule): PercentRegion[] => {
+  const regions: PercentRegion[] = [];
+  if (rule.highlight) {
+    regions.push({
+      x: rule.highlight.x,
+      y: rule.highlight.y,
+      w: rule.highlight.w,
+      h: rule.highlight.h,
+    });
+  }
+  for (const polygon of [...(rule.roi || []), ...(rule.paths || [])]) {
+    if (polygon.length > 0) regions.push({ polygon });
+  }
+  return regions;
+};
+
+const ensureEvidenceRegions = (
+  regions: PercentRegion[],
+  rule: VisionValidationRule,
+  status: ValidationStatus,
+): PercentRegion[] => {
+  if (regions.length > 0) {
+    return regions.map((region) => ({
+      ...region,
+      color: region.color || STATUS_COLOR_MAP[status],
+      label: region.label || rule.name || rule.id,
+    }));
+  }
+  const fallbacks = flattenRuleRegions(rule);
+  if (fallbacks.length === 0) return [];
+  return fallbacks.map((region) => ({
+    ...region,
+    color: STATUS_COLOR_MAP[status],
+    label: rule.name || rule.id,
+  }));
+};
+
+const buildChecksMap = (ruleResults: RuleEvaluation[]) =>
+  Object.fromEntries(
+    ruleResults.map((result) => [result.ruleId, result.status === 'PASS']),
+  );
+
+const averageScores = (scores: Array<number | null | undefined>) => {
+  const finite = scores.filter(
+    (value): value is number => typeof value === 'number' && Number.isFinite(value),
+  );
+  if (finite.length === 0) return null;
+  return finite.reduce((sum, value) => sum + value, 0) / finite.length;
+};
+
 @Injectable()
 export class CvqaService {
   private readonly vertexAI: VertexAI | null = null;
-  private readonly model: GenerativeModelPreview | null = null;
+  private readonly models: ModelClientEntry[] = [];
   private readonly compareTimeoutMs = parsePositiveInt(
     process.env.CVQA_COMPARE_TIMEOUT_MS,
     DEFAULT_COMPARE_TIMEOUT_MS,
   );
 
   constructor(private readonly prisma: PrismaService) {
-    const projectId = process.env.VERTEX_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
-    const locationResolution = resolveVertexLocation([
-      'VERTEX_AI_LOCATION',
-      'VERTEX_LOCATION',
-    ]);
-    const location = locationResolution.location;
-    if (!projectId) {
-      console.warn('VERTEX_PROJECT_ID (or FIREBASE_PROJECT_ID) not found. AI features will be disabled.');
-    } else {
-      if (locationResolution.configuredLocationUnsupported) {
-        const configuredFrom =
-          locationResolution.configuredEnv || 'VERTEX_LOCATION';
-        console.warn(
-          `[CVQA] ${configuredFrom}="${locationResolution.configuredLocation}" is not supported for these Vertex AI model calls. Using "${locationResolution.location}".`,
-        );
-      }
-      this.vertexAI = new VertexAI({ project: projectId, location });
-      this.model = this.vertexAI.preview.getGenerativeModel({
-        model: MODEL_ID,
-      });
+    const projectId =
+      process.env.VERTEX_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+    const modelIds = buildModelIdChain();
+    const preferGlobalEndpoint = modelIds.some(modelRequiresGlobalEndpoint);
+    const locationResolution = resolveVertexLocation(
+      ['VERTEX_AI_LOCATION', 'VERTEX_LOCATION'],
+      { defaultLocation: preferGlobalEndpoint ? 'global' : 'us-central1' },
+    );
+
+    let location = locationResolution.location;
+    if (preferGlobalEndpoint && String(location).toLowerCase() !== 'global') {
+      console.warn(
+        `[CVQA] Forcing Vertex location to "global" to support configured Gemini 3 model(s). Previous resolved location was "${location}".`,
+      );
+      location = 'global';
     }
+
+    if (!projectId) {
+      console.warn(
+        'VERTEX_PROJECT_ID (or FIREBASE_PROJECT_ID) not found. AI features will be disabled.',
+      );
+      return;
+    }
+
+    if (locationResolution.configuredLocationUnsupported) {
+      const configuredFrom = locationResolution.configuredEnv || 'VERTEX_LOCATION';
+      console.warn(
+        `[CVQA] ${configuredFrom}="${locationResolution.configuredLocation}" is not supported for these Vertex AI model calls. Using "${location}".`,
+      );
+    }
+
+    this.vertexAI = new VertexAI({ project: projectId, location });
+    this.models = modelIds.map((modelId) => ({
+      modelId,
+      client: this.vertexAI!.preview.getGenerativeModel({ model: modelId }),
+    }));
   }
 
-  private async generateContentWithRetry(
+  private async generateContentWithFallback(
     request: Parameters<GenerativeModelPreview['generateContent']>[0],
-  ): Promise<Awaited<ReturnType<GenerativeModelPreview['generateContent']>>> {
-    if (!this.model) {
+  ): Promise<{
+    response: Awaited<ReturnType<GenerativeModelPreview['generateContent']>>['response'];
+    modelId: string;
+  }> {
+    if (this.models.length === 0) {
       throw new BadRequestException('Vertex AI is not configured.');
     }
-    return withVertexRetry(
-      () => this.model!.generateContent(request),
-      {
-        operationName: 'CvqaService.generateContent',
-        onRetry: ({
-          attempt,
-          nextAttempt,
-          maxAttempts,
-          delayMs,
-          statusCode,
-          errorMessage,
-        }) => {
-          console.warn(
-            `[CVQA] Vertex retry ${attempt}/${maxAttempts} -> attempt ${nextAttempt} in ${delayMs}ms` +
-            `${statusCode ? ` (status ${statusCode})` : ''}: ${errorMessage}`,
-          );
-        },
-      },
-    );
+
+    let lastError: unknown;
+    for (let index = 0; index < this.models.length; index += 1) {
+      const entry = this.models[index];
+      try {
+        const result = await withVertexRetry(
+          () => entry.client.generateContent(request),
+          {
+            operationName: `CvqaService.generateContent:${entry.modelId}`,
+            onRetry: ({
+              attempt,
+              nextAttempt,
+              maxAttempts,
+              delayMs,
+              statusCode,
+              errorMessage,
+            }) => {
+              console.warn(
+                `[CVQA] Vertex retry (${entry.modelId}) ${attempt}/${maxAttempts} -> attempt ${nextAttempt} in ${delayMs}ms` +
+                  `${statusCode ? ` (status ${statusCode})` : ''}: ${errorMessage}`,
+              );
+            },
+          },
+        );
+        return { response: result.response, modelId: entry.modelId };
+      } catch (error) {
+        lastError = error;
+        const errorMessage = extractErrorMessage(error).toLowerCase();
+        const statusCode = extractStatusCode(error);
+        const canFallback =
+          index < this.models.length - 1 &&
+          (statusCode === 400 ||
+            statusCode === 404 ||
+            statusCode === 429 ||
+            statusCode === 500 ||
+            statusCode === 503 ||
+            errorMessage.includes('not found') ||
+            errorMessage.includes('unsupported') ||
+            errorMessage.includes('resource_exhausted') ||
+            errorMessage.includes('quota') ||
+            errorMessage.includes('rate limit'));
+        if (!canFallback) {
+          throw error;
+        }
+        console.warn(
+          `[CVQA] Falling back from model "${entry.modelId}" due to error: ${extractErrorMessage(
+            error,
+          )}`,
+        );
+      }
+    }
+
+    throw lastError;
   }
 
   private logStage(stage: string, startedAt: number, details?: string) {
@@ -276,9 +701,7 @@ export class CvqaService {
     console.info(`[CVQA] ${stage} completed in ${durationMs}ms${suffix}`);
   }
 
-  private async withCompareTimeout<T>(
-    operation: () => Promise<T>,
-  ): Promise<T> {
+  private async withCompareTimeout<T>(operation: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(
@@ -337,9 +760,7 @@ export class CvqaService {
           return { buffer, mimeType: 'image/jpeg' };
         }
         return {
-          buffer: await image
-            .jpeg({ quality: 88 })
-            .toBuffer(),
+          buffer: await image.jpeg({ quality: 88 }).toBuffer(),
           mimeType: 'image/jpeg',
         };
       }
@@ -363,17 +784,428 @@ export class CvqaService {
     }
   }
 
+  private async assessCaptureQuality(
+    files: Express.Multer.File[],
+  ): Promise<CaptureQualityAssessment> {
+    if (!files.length) {
+      return {
+        status: 'REVIEW',
+        blur: null,
+        exposure: null,
+        framing: null,
+        occlusion: null,
+        issues: ['No se recibió evidencia visual.'],
+        recommendedAction: 'Sube al menos una fotografía de evidencia.',
+      };
+    }
+
+    const blurScores: number[] = [];
+    const exposureScores: number[] = [];
+    const framingScores: number[] = [];
+    const issues: string[] = [];
+
+    for (const [index, file] of files.entries()) {
+      try {
+        const image = sharp(file.buffer).rotate().removeAlpha().greyscale();
+        const [metadata, stats] = await Promise.all([image.metadata(), image.stats()]);
+        const sharpnessScore = clampScore((stats.sharpness || 0) / 14);
+        const mean = stats.channels?.[0]?.mean ?? 128;
+        const exposureScore = clampScore(1 - Math.abs(mean - 128) / 128);
+        const minDimension = Math.min(metadata.width || 0, metadata.height || 0);
+        const framingScore =
+          minDimension >= 720 ? 1 : clampScore(minDimension / 720);
+        blurScores.push(sharpnessScore);
+        exposureScores.push(exposureScore);
+        framingScores.push(framingScore);
+
+        if (sharpnessScore < 0.28) {
+          issues.push(`La foto ${index + 1} está borrosa.`);
+        }
+        if (exposureScore < 0.2) {
+          issues.push(`La foto ${index + 1} tiene iluminación deficiente.`);
+        }
+        if (framingScore < 0.55) {
+          issues.push(`La foto ${index + 1} tiene encuadre o resolución insuficiente.`);
+        }
+      } catch (error) {
+        issues.push(`No se pudo analizar la calidad de la foto ${index + 1}.`);
+      }
+    }
+
+    const blur = averageScores(blurScores);
+    const exposure = averageScores(exposureScores);
+    const framing = averageScores(framingScores);
+    const status =
+      issues.length > 0 &&
+      (blur == null || blur < 0.28 || exposure == null || exposure < 0.2 || framing == null || framing < 0.55)
+        ? 'REVIEW'
+        : 'PASS';
+
+    return {
+      status,
+      blur,
+      exposure,
+      framing,
+      occlusion: null,
+      issues,
+      recommendedAction:
+        status === 'REVIEW'
+          ? 'Vuelve a capturar la evidencia con mejor enfoque, iluminación y encuadre.'
+          : undefined,
+    };
+  }
+
+  private buildRulePromptSummary(rules: VisionValidationRule[]) {
+    return JSON.stringify(
+      rules.map((rule) => ({
+        id: rule.id,
+        name: rule.name || null,
+        description: rule.description,
+        severity: rule.severity,
+        checkType: rule.checkType,
+        passCriteria: rule.passCriteria || null,
+        viewConstraint: rule.viewConstraint,
+        thresholds: rule.thresholds,
+        allowances: rule.allowances ?? null,
+        humanReviewRequiredWhen: rule.humanReviewRequiredWhen,
+        regionSummary: formatRuleRegionSummary(rule),
+        negativeReferenceFileNames: (rule.negativeReferences || [])
+          .map((entry) => entry.fileName)
+          .filter(Boolean),
+      })),
+      null,
+      2,
+    );
+  }
+
+  private buildQualityPrompt(params: any, rules: VisionValidationRule[]) {
+    const specName = params.specName || params.modelName || 'manual';
+    const subjectLabel =
+      normalizeString(params.subjectLabel) ||
+      normalizeString(params.modelName) ||
+      'Elemento inspeccionado';
+    const notes = normalizeString(params.notes);
+    const minimumEvidencePhotos = Math.max(
+      1,
+      Number(params.requiredEvidencePhotos) || 1,
+    );
+    const rulesJson = this.buildRulePromptSummary(rules);
+
+    return `Eres un inspector de calidad industrial especializado en validación visual multimodal.
+
+FUENTE DE VERDAD:
+- La única fuente de verdad para aprobar o rechazar son las REGLAS ESTRUCTURADAS.
+- No apruebes una pieza solo porque "se parece" a la referencia.
+- Ignora cualquier descripción libre que no esté expresada en una regla estructurada.
+
+EVIDENCIA DISPONIBLE:
+- "Archivo a Inspeccionar N" = fotos del operador.
+- "Archivo de Referencia N" = golden samples válidos.
+- "Referencia negativa N" = ejemplo de incumplimiento. Úsalos para entender cómo se ve un FAIL.
+- "Archivo de Referencia Anotado" = mapa visual de las zonas marcadas por el supervisor.
+
+INSTRUCCIONES DE DECISIÓN:
+- Evalúa cada regla por separado.
+- Usa la mejor foto del operador para cada regla según su viewConstraint.
+- Si una regla tiene viewConstraint = "multi_view_required", debes usar al menos 2 fotos del operador. Si no hay suficientes vistas útiles, esa regla queda en REVIEW.
+- Si una regla crítica falla claramente, el overallStatus debe ser FAIL.
+- Si la imagen es ambigua, borrosa, con mala iluminación, o la vista no permite comprobar la regla, usa REVIEW.
+- Nunca conviertas automáticamente un FAIL en PASS.
+- Si el tornillo, cabeza, borde, gap o plano sobresale cuando la regla pide flushness/al ras, es FAIL.
+- Cuando la regla incluya ROI o zona marcada, limita el análisis a esa zona antes de evaluar el resto.
+- Para color_mark, permite pequeñas variaciones por iluminación, pero no apruebes si la marca no existe o el color es claramente incorrecto.
+
+SALIDA OBLIGATORIA:
+- Devuelve solo JSON válido con el esquema solicitado.
+- En evidenceRegions devuelve coordenadas porcentuales 0..100 relativas a la foto del operador seleccionada.
+- Siempre incluye sourceIndices para cada regla. Usa índices base 0.
+- Si una región ya está marcada por el supervisor y coincide con la evidencia, puedes reutilizar esa misma zona.
+
+CONTEXTO:
+- Elemento inspeccionado: ${subjectLabel}
+- Procedimiento/modelo: ${specName}
+- Mínimo de fotos requerido por la solicitud: ${minimumEvidencePhotos}
+${notes ? `- Notas: ${notes}` : ''}
+
+REGLAS ESTRUCTURADAS:
+${rulesJson}
+`;
+  }
+
+  private getRuleNegativeReferenceMap(
+    rules: VisionValidationRule[],
+    negativeReferenceFiles: Express.Multer.File[],
+  ) {
+    const filesByName = new Map<string, Express.Multer.File[]>();
+    for (const file of negativeReferenceFiles) {
+      const key = normalizeFileName(file.originalname);
+      if (!key) continue;
+      const bucket = filesByName.get(key) || [];
+      bucket.push(file);
+      filesByName.set(key, bucket);
+    }
+
+    return rules.map((rule) => {
+      const matchedFiles =
+        (rule.negativeReferences || [])
+          .flatMap((reference) =>
+            reference.fileName
+              ? filesByName.get(normalizeFileName(reference.fileName)) || []
+              : [],
+          )
+          .filter(Boolean) || [];
+      return { rule, files: matchedFiles };
+    });
+  }
+
+  private normalizeModelRuleResults(
+    rawResults: unknown,
+    rules: VisionValidationRule[],
+    evidenceCount: number,
+  ): RuleEvaluation[] {
+    const rawArray = Array.isArray(rawResults) ? rawResults : [];
+    const byRuleId = new Map<string, any>();
+    for (const entry of rawArray) {
+      if (!entry || typeof entry !== 'object') continue;
+      const key =
+        normalizeString((entry as any).ruleId) ||
+        normalizeString((entry as any).id) ||
+        normalizeString((entry as any).name);
+      if (key) byRuleId.set(key, entry);
+    }
+
+    return rules.map((rule) => {
+      const raw =
+        byRuleId.get(rule.id) ||
+        byRuleId.get(rule.name || '') ||
+        byRuleId.get(rule.description);
+      const sourceIndices = Array.isArray(raw?.sourceIndices)
+        ? raw.sourceIndices
+            .map((value: any) => Number(value))
+            .filter(
+              (value: number) =>
+                Number.isFinite(value) && value >= 0 && value < evidenceCount,
+            )
+        : rule.viewConstraint === 'multi_view_required'
+          ? Array.from({ length: Math.min(2, evidenceCount) }, (_, index) => index)
+          : evidenceCount > 0
+            ? [0]
+            : [];
+
+      const evidenceRegions = Array.isArray(raw?.evidenceRegions)
+        ? raw.evidenceRegions
+            .map((region: any) => {
+              const polygon = Array.isArray(region?.polygon)
+                ? region.polygon
+                    .map((point: any) => {
+                      const x = normalizePercentNumber(point?.x);
+                      const y = normalizePercentNumber(point?.y);
+                      return x == null || y == null ? null : { x, y };
+                    })
+                    .filter(Boolean)
+                : [];
+              const x = normalizePercentNumber(region?.x);
+              const y = normalizePercentNumber(region?.y);
+              const w = normalizePercentNumber(region?.w);
+              const h = normalizePercentNumber(region?.h);
+              if (
+                polygon.length === 0 &&
+                (x == null || y == null || w == null || h == null)
+              ) {
+                return null;
+              }
+              return {
+                x,
+                y,
+                w,
+                h,
+                polygon,
+                color: normalizeString(region?.color),
+                label: normalizeString(region?.label),
+              } as PercentRegion;
+            })
+            .filter(Boolean)
+        : [];
+
+      const status = normalizeStatus(raw?.status);
+      return {
+        ruleId: rule.id,
+        name: normalizeString(raw?.name) || rule.name || rule.description,
+        status,
+        confidence:
+          normalizeScore(raw?.confidence) ??
+          (status === 'PASS' ? rule.thresholds.passMin : status === 'FAIL' ? 1 : null),
+        reason:
+          normalizeString(raw?.reason) ||
+          (status === 'REVIEW'
+            ? 'La evidencia no fue suficiente para validar esta regla.'
+            : undefined),
+        expectedState: normalizeString(raw?.expectedState) || rule.passCriteria,
+        observedState: normalizeString(raw?.observedState),
+        sourceIndices,
+        evidenceRegions: ensureEvidenceRegions(evidenceRegions, rule, status),
+      };
+    });
+  }
+
+  private mergeCaptureQuality(
+    localQuality: CaptureQualityAssessment,
+    modelQuality: any,
+  ): CaptureQualityAssessment {
+    const modelStatus = normalizeStatus(modelQuality?.status, localQuality.status);
+    const issues = [
+      ...new Set([
+        ...localQuality.issues,
+        ...normalizeStringArray(modelQuality?.issues),
+      ]),
+    ];
+    const status =
+      localQuality.status === 'REVIEW' || modelStatus === 'REVIEW'
+        ? 'REVIEW'
+        : localQuality.status === 'FAIL' || modelStatus === 'FAIL'
+          ? 'FAIL'
+          : 'PASS';
+
+    return {
+      status,
+      blur: normalizeScore(modelQuality?.blur) ?? localQuality.blur,
+      exposure: normalizeScore(modelQuality?.exposure) ?? localQuality.exposure,
+      framing: normalizeScore(modelQuality?.framing) ?? localQuality.framing,
+      occlusion: normalizeScore(modelQuality?.occlusion) ?? localQuality.occlusion,
+      issues,
+      recommendedAction:
+        normalizeString(modelQuality?.recommendedAction) ||
+        localQuality.recommendedAction,
+    };
+  }
+
+  private computeOverallStatus(
+    rules: VisionValidationRule[],
+    ruleResults: RuleEvaluation[],
+    captureQuality: CaptureQualityAssessment,
+  ): ValidationStatus {
+    if (captureQuality.status === 'REVIEW') return 'REVIEW';
+    const criticalRuleIds = new Set(
+      rules.filter((rule) => rule.severity === 'critical').map((rule) => rule.id),
+    );
+    if (
+      ruleResults.some(
+        (result) =>
+          result.status === 'FAIL' && criticalRuleIds.has(result.ruleId),
+      )
+    ) {
+      return 'FAIL';
+    }
+    if (ruleResults.some((result) => result.status === 'FAIL')) return 'FAIL';
+    if (ruleResults.some((result) => result.status === 'REVIEW')) return 'REVIEW';
+    return 'PASS';
+  }
+
+  private buildReviewResponseForMissingViews(
+    rules: VisionValidationRule[],
+    evidenceCount: number,
+  ): CompareResponse {
+    const affectedRules = rules.filter(
+      (rule) => rule.viewConstraint === 'multi_view_required',
+    );
+    const ruleResults = affectedRules.map((rule) => ({
+      ruleId: rule.id,
+      name: rule.name || rule.description,
+      status: 'REVIEW' as ValidationStatus,
+      confidence: null,
+      reason:
+        'La regla requiere varias vistas y no se recibieron suficientes fotos.',
+      expectedState: rule.passCriteria,
+      observedState: `Se recibieron ${evidenceCount} foto(s).`,
+      sourceIndices: Array.from({ length: evidenceCount }, (_, index) => index),
+      evidenceRegions: ensureEvidenceRegions([], rule, 'REVIEW'),
+    }));
+    return {
+      status: 'REVIEW',
+      overallStatus: 'REVIEW',
+      summary:
+        'La validación requiere al menos 2 fotografías desde ángulos distintos para completar las reglas multiángulo.',
+      issues: [
+        'Faltan vistas complementarias para validar al menos una regla marcada como multi_view_required.',
+      ],
+      missing: ['Mínimo 2 fotos de evidencia'],
+      confidence: null,
+      overallConfidence: null,
+      checks: buildChecksMap(ruleResults),
+      captureQuality: {
+        status: 'REVIEW',
+        blur: null,
+        exposure: null,
+        framing: null,
+        occlusion: null,
+        issues: [
+          'No se recibieron suficientes ángulos para completar la inspección.',
+        ],
+        recommendedAction:
+          'Toma al menos 2 fotos desde ángulos distintos y vuelve a validar.',
+      },
+      ruleResults,
+      recommendedAction:
+        'Toma al menos 2 fotos desde ángulos distintos y vuelve a validar.',
+    };
+  }
+
+  private async buildAnnotatedEvidenceImages(
+    objectFiles: Express.Multer.File[],
+    ruleResults: RuleEvaluation[],
+  ): Promise<Array<{ url: string; label?: string; sourceIndex?: number }>> {
+    const usedIndices = [
+      ...new Set(ruleResults.flatMap((result) => result.sourceIndices)),
+    ].filter((index) => index >= 0 && index < objectFiles.length);
+
+    const indicesToRender =
+      usedIndices.length > 0
+        ? usedIndices
+        : objectFiles.length > 0
+          ? [0]
+          : [];
+
+    const images: Array<{ url: string; label?: string; sourceIndex?: number }> = [];
+    for (const sourceIndex of indicesToRender) {
+      const file = objectFiles[sourceIndex];
+      if (!file) continue;
+      const regions = ruleResults
+        .filter((result) => result.sourceIndices.includes(sourceIndex))
+        .flatMap((result) =>
+          result.evidenceRegions.map((region) => ({
+            ...region,
+            color: region.color || STATUS_COLOR_MAP[result.status],
+            label: region.label || result.name || result.ruleId,
+          })),
+        );
+      if (regions.length === 0) continue;
+      try {
+        const annotatedBuffer = await createAnnotatedBuffer(file.buffer, regions);
+        if (!annotatedBuffer) continue;
+        images.push({
+          url: `data:image/jpeg;base64,${annotatedBuffer.toString('base64')}`,
+          label: `Evidencia ${sourceIndex + 1}`,
+          sourceIndex,
+        });
+      } catch (error) {
+        console.warn('[CVQA] Failed to annotate evidence image', error);
+      }
+    }
+    return images;
+  }
+
   async compareVisionQuality(
     files: {
       manual?: Express.Multer.File[];
       object_file?: Express.Multer.File[];
       golden?: Express.Multer.File[];
+      negative_reference?: Express.Multer.File[];
     },
     paramsString: string,
     user?: any,
     organizationId?: string,
-  ) {
-    if (!this.model) {
+  ): Promise<CompareResponse> {
+    if (!this.models.length) {
       throw new BadRequestException('Vertex AI is not configured.');
     }
 
@@ -383,96 +1215,41 @@ export class CvqaService {
       if (paramsString) {
         try {
           params = JSON.parse(paramsString);
-        } catch (e) {
+        } catch {
           throw new BadRequestException('Invalid params JSON');
         }
       }
+
+      const rules = normalizeVisionValidationRules(params.rules);
       params = {
         ...params,
-        rules: normalizeVisionValidationRules(params.rules),
+        subjectLabel:
+          normalizeString(params.subjectLabel) ||
+          normalizeString(params.modelName) ||
+          undefined,
+        requiredEvidencePhotos: Math.max(
+          1,
+          Number(params.requiredEvidencePhotos) || 1,
+        ),
+        rules,
       };
       this.logStage('params normalization', startedAt);
 
-      const buildQualityPrompt = (p: any): string => {
-        const specName = p.specName || "manual";
-        const specVersion = p.specVersion || "";
-        const specVersionText = specVersion ? ` (version ${specVersion})` : "";
+      const objectFiles = files.object_file || [];
+      const goldenFiles = files.golden || [];
+      const negativeReferenceFiles = files.negative_reference || [];
+      const requiresMultiView = rules.some(
+        (rule) => rule.viewConstraint === 'multi_view_required',
+      );
 
-        const rules: VisionValidationRule[] = p.rules || [];
-        const rulesText = rules.length > 0
-          ? rules.map((r: VisionValidationRule, index: number) => {
-            const colorHint = r.color
-              ? ` (Color aproximado de referencia visual de la zona: ${r.color} — compara VISUALMENTE, no exactamente. Considera iluminación, sombras y variación de cámara. Un color similar o del mismo tono cuenta como correcto.)`
-              : '';
-            const regionHint = formatRuleRegionSummary(r);
-            return `- Regla ${index + 1}: ${r.description || 'Regla'}${colorHint}${regionHint}`;
-          }).join('\n')
-          : "- Usa el manual/especificación como referencia principal.";
+      if (requiresMultiView && objectFiles.length < 2) {
+        return this.buildReviewResponseForMissingViews(rules, objectFiles.length);
+      }
 
-        const tolerances = p.tolerances || {};
-        const alignmentMm = tolerances.alignmentMm;
-        const dimensionPct = tolerances.dimensionPercent;
-        const gapMm = tolerances.gapMm;
-        const confidenceThreshold = p.confidenceThreshold;
-        const extraNotes = p.notes || "";
+      const localCaptureQuality = await this.assessCaptureQuality(objectFiles);
+      this.logStage('local quality gate', startedAt);
 
-        const checks = p.checks || {};
-        const checksText = Object.keys(checks).filter(k => checks[k]).join(', ') || "validacion general";
-
-        const toleranceLines: string[] = [];
-        if (alignmentMm !== undefined && alignmentMm !== null) toleranceLines.push(`- Tolerancia de alineacion: ${alignmentMm} mm.`);
-        if (dimensionPct !== undefined && dimensionPct !== null) toleranceLines.push(`- Tolerancia dimensional: ${dimensionPct} %.`);
-        if (gapMm !== undefined && gapMm !== null) toleranceLines.push(`- Tolerancia de separacion/holgura: ${gapMm} mm.`);
-        if (confidenceThreshold !== undefined && confidenceThreshold !== null) toleranceLines.push(`- Umbral minimo de confianza: ${confidenceThreshold}.`);
-
-        const toleranceText = toleranceLines.length > 0 ? toleranceLines.join('\n') : "- Usa tolerancias razonables segun el manual.";
-        const notesText = extraNotes ? `\nNotas adicionales del operador:\n${extraNotes}\n` : "";
-
-        const pastSteps = p.pastSteps || [];
-        const pastStepsText = pastSteps.length > 0
-          ? `\nContexto de pasos previos (para referencia de estado histórico):\n` + pastSteps.map((s: any, idx: number) => {
-            return `Paso previo ${idx + 1}: ${s.title}\nDescripción: ${s.description}\ntiene foto: ${s.hasPhoto ? 'Sí' : 'No'}`;
-          }).join('\n\n')
-          : "";
-
-        return `Eres un inspector de control de calidad en un proceso de ensamble por pasos. Se te proporcionarán una o más imágenes del objeto a validar y, si existen, imágenes de referencia.
-
-REGLAS GENERALES DE RAZONAMIENTO:
-- Las imágenes etiquetadas como "Objeto real" o "Archivo a Inspeccionar" son la evidencia principal a validar.
-- Las imágenes etiquetadas como "Archivo de Referencia" o "Golden Sample" son referencias del resultado esperado.
-- Si también recibes una imagen etiquetada como "Golden Sample Anotado", úsala como mapa visual prioritario de las zonas pintadas por el supervisor.
-- Cuando una regla habla de altura entre pasos (ej: "las piezas de este paso deben ser más altas que el paso anterior"), interpreta "más alta" como: la pieza está físicamente en una capa o nivel superior en el ensamble. Una pieza colocada ENCIMA de otras piezas es, por definición, más alta que las piezas sobre las que descansa.
-- Si las piezas resaltadas o marcadas en la imagen están claramente apiladas encima del nivel previo, la regla de altura se cumple.
-- Cuando una regla mencione "piezas resaltadas" o "marcadas", enfoca tu análisis exclusivamente en esas piezas.
-- Cuando una regla traiga coordenadas, rectángulos o trazos marcados, limita tu análisis a esa región antes de evaluar el resto del objeto.
-- Cuando tengas dudas razonables o la imagen sea ambigua, devuelve status REVIEW, nunca FAIL. Solo devuelve FAIL cuando estés seguro de que la regla se viola claramente.
-- No inferir defectos que no puedas ver con claridad en la imagen.
-- PRINCIPIO GENERAL: Si una regla está aproximadamente cumplida, devuelve PASS. El umbral para pasar debe ser generoso: pequeñas desviaciones de posición, color o forma que no afecten la funcionalidad del ensamble deben ser ignoradas.
-
-COMPARACIÓN DE COLOR:
-- Los colores en las reglas son referencias visuales aproximadas, NO valores exactos de píxel.
-- Las fotos de piezas físicas siempre tienen variaciones por iluminación, sombras, ángulo de cámara y balance de blancos.
-- Para validar una regla de color: si los objetos pertenecen claramente al mismo tono o familia de color (ej: ambos son azul claro, ambos son amarillo), la regla se cumple AUNQUE el tono exacto difiera levemente.
-- Solo marca FAIL por color si los objetos son claramente de colores distintos (ej: uno rojo y otro azul). Diferencias de tono leve = PASS.
-- Cuando veas un código hexadecimal en una regla, úsalo solo para orientarte en el rango de color (ej: azul claro ≈ #4CA1E3), no para comparar exactamente.
-
-Manual de referencia: ${specName}${specVersionText}
-
-Reglas de inspección para este paso:
-${rulesText}
-${pastStepsText}
-
-Checks solicitados: ${checksText}.
-Tolerancias:
-${toleranceText}
-${notesText}
-Responde usando la estructura generada por el esquema asegurando coincidencia 100%. Recuerda: en caso de duda, usa REVIEW, no FAIL.`;
-      };
-
-      const promptText = params.prompt && typeof params.prompt === 'string' && params.prompt.trim() !== ''
-        ? params.prompt
-        : buildQualityPrompt(params);
-
+      const promptText = this.buildQualityPrompt(params, rules);
       const parts: any[] = [{ text: promptText }];
       const optimizedCache = new Map<
         string,
@@ -489,16 +1266,15 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
       };
 
       const addFilePart = async (label: string, fileObj?: Express.Multer.File) => {
-        if (fileObj) {
-          const optimized = await getOptimizedImage(fileObj);
-          parts.push({ text: label });
-          parts.push({
-            inlineData: {
-              mimeType: optimized.mimeType,
-              data: optimized.buffer.toString('base64'),
-            }
-          });
-        }
+        if (!fileObj) return;
+        const optimized = await getOptimizedImage(fileObj);
+        parts.push({ text: label });
+        parts.push({
+          inlineData: {
+            mimeType: optimized.mimeType,
+            data: optimized.buffer.toString('base64'),
+          },
+        });
       };
 
       const addBufferPart = async (
@@ -513,34 +1289,31 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
           inlineData: {
             mimeType: optimized.mimeType,
             data: optimized.buffer.toString('base64'),
-          }
+          },
         });
       };
 
-      await addFilePart("Archivo 1 (Manual/Especificación):", files.manual?.[0]);
+      await addFilePart('Archivo 1 (Manual/Especificación):', files.manual?.[0]);
 
-      const objectFiles = files.object_file || [];
-      const goldenFiles = files.golden || [];
       const primaryFilesAreIdentical =
         objectFiles.length > 0 &&
         goldenFiles.length > 0 &&
         objectFiles[0].buffer.equals(goldenFiles[0].buffer);
 
-      if (objectFiles.length > 0) {
-        for (let i = 0; i < objectFiles.length; i++) {
-          await addFilePart(
-            i === 0
-              ? "Archivo a Inspeccionar 1 (Objeto real):"
-              : `Archivo a Inspeccionar ${i + 1} (Evidencia adicional):`,
-            objectFiles[i],
-          );
-        }
+      for (let i = 0; i < objectFiles.length; i += 1) {
+        await addFilePart(
+          i === 0
+            ? 'Archivo a Inspeccionar 1 (Objeto real):'
+            : `Archivo a Inspeccionar ${i + 1} (Evidencia adicional):`,
+          objectFiles[i],
+        );
       }
-      for (let i = 0; i < goldenFiles.length; i++) {
+
+      for (let i = 0; i < goldenFiles.length; i += 1) {
         if (i === 0 && primaryFilesAreIdentical) {
           parts.push({
             text:
-              'Archivo de Referencia 1 (Golden Sample): idéntico byte a byte al objeto real principal. Usa la misma imagen como referencia y evidencia para comparar estructura, posición y cumplimiento de reglas.',
+              'Archivo de Referencia 1 (Golden Sample): idéntico byte a byte al objeto real principal. Usa la misma imagen como referencia y evidencia.',
           });
           continue;
         }
@@ -549,13 +1322,25 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
           goldenFiles[i],
         );
       }
-      this.logStage('image preparation', startedAt, `${parts.length} prompt parts`);
 
-      if (goldenFiles[0] && params.rules.length > 0) {
+      const negativeReferenceMap = this.getRuleNegativeReferenceMap(
+        rules,
+        negativeReferenceFiles,
+      );
+      for (const [index, entry] of negativeReferenceMap.entries()) {
+        for (const [fileIndex, file] of entry.files.entries()) {
+          await addFilePart(
+            `Referencia negativa ${index + 1}.${fileIndex + 1} (incumplimiento para regla "${entry.rule.name || entry.rule.description}") :`,
+            file,
+          );
+        }
+      }
+
+      if (goldenFiles[0] && rules.length > 0) {
         try {
           const annotatedGoldenBuffer = await createAnnotatedReferenceBuffer(
             goldenFiles[0].buffer,
-            params.rules,
+            rules,
           );
           await addBufferPart(
             'Archivo de Referencia Anotado (Golden Sample con zonas marcadas):',
@@ -563,12 +1348,15 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
             'image/jpeg',
           );
         } catch (error) {
-          console.warn('[CVQA] Failed to build annotated golden sample overlay', error);
+          console.warn(
+            '[CVQA] Failed to build annotated golden sample overlay',
+            error,
+          );
         }
       }
+      this.logStage('image preparation', startedAt, `${parts.length} prompt parts`);
 
       const request = {
-        model: MODEL_ID,
         contents: [
           {
             role: 'user',
@@ -580,72 +1368,161 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
           responseSchema: {
             type: 'OBJECT' as any,
             properties: {
-              status: {
+              overallStatus: {
                 type: 'STRING' as any,
-                enum: ['PASS', 'FAIL', 'REVIEW'],
+                enum: VALID_STATUSES,
               },
+              overallConfidence: { type: 'NUMBER' as any },
               summary: { type: 'STRING' as any },
               issues: { type: 'ARRAY' as any, items: { type: 'STRING' as any } },
               missing: { type: 'ARRAY' as any, items: { type: 'STRING' as any } },
-              confidence: { type: 'NUMBER' as any },
-              checks: { type: 'OBJECT' as any },
+              recommendedAction: { type: 'STRING' as any },
+              captureQuality: {
+                type: 'OBJECT' as any,
+                properties: {
+                  status: {
+                    type: 'STRING' as any,
+                    enum: VALID_STATUSES,
+                  },
+                  blur: { type: 'NUMBER' as any },
+                  exposure: { type: 'NUMBER' as any },
+                  framing: { type: 'NUMBER' as any },
+                  occlusion: { type: 'NUMBER' as any },
+                  issues: {
+                    type: 'ARRAY' as any,
+                    items: { type: 'STRING' as any },
+                  },
+                  recommendedAction: { type: 'STRING' as any },
+                },
+                required: ['status'],
+              },
+              ruleResults: {
+                type: 'ARRAY' as any,
+                items: {
+                  type: 'OBJECT' as any,
+                  properties: {
+                    ruleId: { type: 'STRING' as any },
+                    name: { type: 'STRING' as any },
+                    status: {
+                      type: 'STRING' as any,
+                      enum: VALID_STATUSES,
+                    },
+                    confidence: { type: 'NUMBER' as any },
+                    reason: { type: 'STRING' as any },
+                    expectedState: { type: 'STRING' as any },
+                    observedState: { type: 'STRING' as any },
+                    sourceIndices: {
+                      type: 'ARRAY' as any,
+                      items: { type: 'NUMBER' as any },
+                    },
+                    evidenceRegions: {
+                      type: 'ARRAY' as any,
+                      items: {
+                        type: 'OBJECT' as any,
+                        properties: {
+                          x: { type: 'NUMBER' as any },
+                          y: { type: 'NUMBER' as any },
+                          w: { type: 'NUMBER' as any },
+                          h: { type: 'NUMBER' as any },
+                          label: { type: 'STRING' as any },
+                          color: { type: 'STRING' as any },
+                          polygon: {
+                            type: 'ARRAY' as any,
+                            items: {
+                              type: 'OBJECT' as any,
+                              properties: {
+                                x: { type: 'NUMBER' as any },
+                                y: { type: 'NUMBER' as any },
+                              },
+                              required: ['x', 'y'],
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                  required: ['ruleId', 'status', 'sourceIndices'],
+                },
+              },
             },
-            required: ['status', 'summary', 'issues', 'missing', 'confidence'],
+            required: ['overallStatus', 'summary', 'captureQuality', 'ruleResults'],
           },
           temperature: 0,
         },
       };
 
-      const response = await this.withCompareTimeout(async () => {
-        const result = await this.generateContentWithRetry(request);
-        return result.response;
-      });
-      this.logStage('vertex compare', startedAt);
-      const responseText = response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+      const { response, modelId } = await this.withCompareTimeout(async () =>
+        this.generateContentWithFallback(request),
+      );
+      this.logStage('vertex compare', startedAt, modelId);
+      const responseText =
+        response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
 
-      let jsonResult;
+      let jsonResult: any;
       try {
         jsonResult = JSON.parse(responseText);
-      } catch (e) {
+      } catch {
         console.error('[CVQA] QA Vision parse error:', responseText);
         jsonResult = {
-          status: 'REVIEW',
+          overallStatus: 'REVIEW',
           summary: 'Error procesando la respuesta de la IA.',
           issues: ['Error interno al leer JSON'],
+          captureQuality: {
+            status: 'REVIEW',
+            issues: ['No se pudo interpretar la respuesta del modelo.'],
+          },
+          ruleResults: [],
         };
       }
 
-      let statusRaw = jsonResult.status || jsonResult.result || jsonResult.decision || 'REVIEW';
-      let status = String(statusRaw).toUpperCase();
-      if (!['PASS', 'FAIL', 'REVIEW'].includes(status)) {
-        status = 'REVIEW';
-      }
-
-      const confidence = typeof jsonResult.confidence === 'number'
-        ? jsonResult.confidence
-        : (typeof jsonResult.score === 'number' ? jsonResult.score : null);
-
-      // If the AI is uncertain (confidence < 0.75) but still calls FAIL,
-      // downgrade to REVIEW so a human can decide — avoids false-negative hard blocks.
-      const FAIL_CONFIDENCE_THRESHOLD = 0.85;
-      if (status === 'FAIL' && confidence !== null && confidence < FAIL_CONFIDENCE_THRESHOLD) {
-        console.log(`[CVQA] Downgrading FAIL to REVIEW — confidence ${confidence} below threshold ${FAIL_CONFIDENCE_THRESHOLD}`);
-        status = 'REVIEW';
-      }
-
-      const listify = (v: any): string[] => {
-        if (!v) return [];
-        if (Array.isArray(v)) return v.map(String);
-        return [String(v)];
-      };
+      const captureQuality = this.mergeCaptureQuality(
+        localCaptureQuality,
+        jsonResult.captureQuality,
+      );
+      const ruleResults = this.normalizeModelRuleResults(
+        jsonResult.ruleResults,
+        rules,
+        objectFiles.length,
+      );
+      const overallStatus = this.computeOverallStatus(
+        rules,
+        ruleResults,
+        captureQuality,
+      );
+      const overallConfidence =
+        normalizeScore(jsonResult.overallConfidence) ??
+        averageScores(ruleResults.map((result) => result.confidence));
+      const annotatedImages = await this.buildAnnotatedEvidenceImages(
+        objectFiles,
+        ruleResults,
+      );
+      const recommendedAction =
+        normalizeString(jsonResult.recommendedAction) ||
+        captureQuality.recommendedAction ||
+        (overallStatus === 'REVIEW'
+          ? 'Recaptura la evidencia o envía la pieza a revisión humana.'
+          : undefined);
 
       return {
-        status,
-        summary: jsonResult.summary || jsonResult.notes || jsonResult.reason,
-        issues: listify(jsonResult.issues || jsonResult.defects || jsonResult.findings),
-        missing: listify(jsonResult.missing || jsonResult.missing_parts || jsonResult.missingParts),
-        confidence: typeof jsonResult.confidence === 'number' ? jsonResult.confidence : (typeof jsonResult.score === 'number' ? jsonResult.score : null),
-        checks: jsonResult.checks || null,
+        status: overallStatus,
+        overallStatus,
+        summary:
+          normalizeString(jsonResult.summary) ||
+          (overallStatus === 'PASS'
+            ? 'La evidencia cumple las reglas definidas.'
+            : overallStatus === 'FAIL'
+              ? 'La evidencia no cumple una o más reglas definidas.'
+              : 'La evidencia no fue suficiente para una decisión confiable.'),
+        issues: normalizeStringArray(jsonResult.issues),
+        missing: normalizeStringArray(jsonResult.missing),
+        confidence: overallConfidence,
+        overallConfidence,
+        checks: buildChecksMap(ruleResults),
+        captureQuality,
+        ruleResults,
+        annotatedImage: annotatedImages[0]?.url,
+        annotatedImages,
+        recommendedAction,
       };
     } catch (error: any) {
       const statusCode = extractStatusCode(error);
@@ -672,17 +1549,17 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
   async validateRulesLogic(
     payload: {
       rules: any[];
-      referenceImageDescription?: string;
       subjectLabel?: string;
     },
     referenceImage?: Express.Multer.File,
-  ): Promise<{ status: 'valid' | 'invalid', message?: string }> {
+  ): Promise<{ status: 'valid' | 'invalid'; message?: string }> {
     try {
       const rules = normalizeVisionValidationRules(payload?.rules);
       if (rules.length === 0) {
         return {
           status: 'invalid',
-          message: 'Agrega al menos una regla antes de comprobar la coherencia.',
+          message:
+            'Agrega al menos una regla estructurada antes de comprobar la coherencia.',
         };
       }
 
@@ -690,62 +1567,42 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
         typeof payload?.subjectLabel === 'string' && payload.subjectLabel.trim()
           ? payload.subjectLabel.trim()
           : 'Elemento visual';
-      const referenceImageDescription =
-        typeof payload?.referenceImageDescription === 'string' &&
-        payload.referenceImageDescription.trim()
-          ? payload.referenceImageDescription.trim()
-          : '';
-      const rulesText = rules
-        .map((rule, index) => `- Regla ${index + 1}: "${rule.description || 'Regla sin texto'}"${formatRuleRegionSummary(rule)}`)
-        .join('\n');
+      const rulesText = this.buildRulePromptSummary(rules);
 
       const promptText = `
-        Eres un experto inspector de calidad industrial.
-        Debes evaluar si un conjunto de reglas visuales, la imagen de referencia y las zonas marcadas son coherentes y viables para una validación automática por IA.
+Eres un experto inspector de calidad industrial.
+Debes evaluar si un conjunto de reglas visuales estructuradas y la imagen de referencia son coherentes y viables para una validación automática por IA.
 
-        Contexto:
-        - Elemento inspeccionado: ${subjectLabel}
-        - Descripción adicional de la imagen de referencia: ${referenceImageDescription || 'Sin descripción adicional'}
-        - Si recibes una imagen "Referencia anotada", usa las zonas pintadas como evidencia principal de dónde quiere inspeccionar el supervisor.
+Contexto:
+- Elemento inspeccionado: ${subjectLabel}
+- Si recibes una imagen "Referencia anotada", usa las zonas pintadas como evidencia principal de dónde quiere inspeccionar el supervisor.
 
-        Revisa si existe alguno de estos problemas:
-        1. Reglas lógicamente imposibles o contradictorias.
-        2. Reglas ambiguas o poco observables en una foto real.
-        3. Reglas que dependen de detalles que no se ven claramente en la imagen de referencia.
-        4. Zonas marcadas incoherentes con la regla: apuntan al lugar equivocado, están vacías, son demasiado amplias, demasiado pequeñas o no ayudan a comprobar lo que la regla pide.
-        5. La foto base no es suficiente para validar esas reglas por ángulo, resolución, iluminación o encuadre.
+Verifica si existe alguno de estos problemas:
+1. Reglas lógicamente imposibles o contradictorias.
+2. Reglas ambiguas o no observables en una foto real.
+3. Reglas que deberían ser multiángulo pero están marcadas como una sola vista.
+4. Zonas marcadas incoherentes con la regla: apuntan al lugar equivocado, están vacías, demasiado amplias o demasiado pequeñas.
+5. La foto base no es suficiente para validar esas reglas por ángulo, resolución, iluminación o encuadre.
 
-        Reglas y zonas a verificar:
-        ${rulesText}
+Reglas estructuradas:
+${rulesText}
 
-        Responde ÚNICAMENTE con un JSON en este formato estricto:
-        {
-          "status": "valid" | "invalid",
-          "message": "Si es 'invalid', explica concretamente qué regla, imagen o zona marcada debe cambiar y sugiere cómo corregirlo. Si todo es viable, omite este campo."
-        }
+Responde ÚNICAMENTE con JSON en este formato estricto:
+{
+  "status": "valid" | "invalid",
+  "message": "Si es invalid, explica qué regla o zona debe corregirse y cómo."
+}
       `;
 
       const parts: any[] = [{ text: promptText }];
-      const compressImage = async (buffer: Buffer): Promise<Buffer> => {
-        try {
-          return await sharp(buffer)
-            .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: 90 })
-            .toBuffer();
-        } catch (error) {
-          console.warn('[CVQA] Image compression failed during rules validation', error);
-          return buffer;
-        }
-      };
-
       const addBufferPart = async (label: string, buffer?: Buffer | null) => {
         if (!buffer) return;
-        const optimizedBuffer = await compressImage(buffer);
+        const optimized = await this.optimizeImageForVertex(buffer, 'image/jpeg');
         parts.push({ text: label });
         parts.push({
           inlineData: {
-            mimeType: 'image/jpeg',
-            data: optimizedBuffer.toString('base64'),
+            mimeType: optimized.mimeType,
+            data: optimized.buffer.toString('base64'),
           },
         });
       };
@@ -753,15 +1610,23 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
       if (referenceImage?.buffer) {
         await addBufferPart('Imagen de Referencia:', referenceImage.buffer);
         try {
-          const annotatedBuffer = await createAnnotatedReferenceBuffer(referenceImage.buffer, rules);
-          await addBufferPart('Referencia anotada con reglas y zonas marcadas:', annotatedBuffer);
+          const annotatedBuffer = await createAnnotatedReferenceBuffer(
+            referenceImage.buffer,
+            rules,
+          );
+          await addBufferPart(
+            'Referencia anotada con reglas y zonas marcadas:',
+            annotatedBuffer,
+          );
         } catch (error) {
-          console.warn('[CVQA] Failed to build annotated reference during rules validation', error);
+          console.warn(
+            '[CVQA] Failed to build annotated reference during rules validation',
+            error,
+          );
         }
       }
 
       const request = {
-        model: MODEL_ID,
         contents: [{ role: 'user', parts }],
         generationConfig: {
           responseMimeType: 'application/json',
@@ -780,21 +1645,33 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
         },
       };
 
-      const result = await this.generateContentWithRetry(request);
-      const responseText = result.response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+      const { response } = await this.generateContentWithFallback(request);
+      const responseText =
+        response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
 
       let jsonResult;
       try {
         jsonResult = JSON.parse(responseText);
-      } catch (e) {
+      } catch {
         console.error('[CVQA] Rules validation parse error:', responseText);
-        return { status: 'invalid', message: 'No se pudo analizar la respuesta de validación.' };
+        return {
+          status: 'invalid',
+          message: 'No se pudo analizar la respuesta de validación.',
+        };
       }
 
-      return jsonResult;
+      return {
+        status: jsonResult?.status === 'valid' ? 'valid' : 'invalid',
+        message: normalizeString(jsonResult?.message),
+      };
     } catch (error: any) {
-      console.error('[CVQA] Rules Validation Error:', error.message || error);
-      throw new InternalServerErrorException('Error al pre-validar las reglas con IA: ' + (error.message || ''));
+      console.error(
+        '[CVQA] Rules Validation Error:',
+        error.message || error,
+      );
+      throw new InternalServerErrorException(
+        'Error al pre-validar las reglas con IA: ' + (error.message || ''),
+      );
     }
   }
 
@@ -803,7 +1680,7 @@ Responde usando la estructura generada por el esquema asegurando coincidencia 10
     userId: string,
     inputPayload: any,
     originalOutput: any,
-    correctedOutput: any
+    correctedOutput: any,
   ) {
     try {
       const example = await this.prisma.aiTrainingExample.create({
