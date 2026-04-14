@@ -718,17 +718,15 @@ const ensureEvidenceRegions = (
 } => {
   const statusPolygonColor =
     status === 'PASS' ? STATUS_COLOR_MAP.PASS : STATUS_COLOR_MAP.FAIL;
-  const fallbackRuleZone = getRuleAnchorRegion(rule) || flattenRuleRegions(rule)[0];
   const matchedRuleRegion =
-    options?.matchedRuleRegion || fallbackRuleZone
+    options?.matchedRuleRegion
       ? {
-          ...(options?.matchedRuleRegion || fallbackRuleZone)!,
+          ...options.matchedRuleRegion,
           regionRole: 'rule_zone' as PercentRegionRole,
           color:
-            (options?.matchedRuleRegion || fallbackRuleZone)?.color ||
-            statusPolygonColor,
+            options.matchedRuleRegion.color || statusPolygonColor,
           label:
-            (options?.matchedRuleRegion || fallbackRuleZone)?.label ||
+            options.matchedRuleRegion.label ||
             `Zona de regla${rule.name ? ` · ${rule.name}` : ''}`,
         }
       : undefined;
@@ -751,14 +749,11 @@ const ensureEvidenceRegions = (
     label: region.label || rule.name || rule.id,
   }));
 
-  const unique = new Set<string>();
   const evidenceRegions: PercentRegion[] = [];
-  for (const region of [matchedRuleRegion, defectRegion, ...legacyRegions]) {
-    if (!region) continue;
-    const key = buildPercentRegionKey(region);
-    if (unique.has(key)) continue;
-    unique.add(key);
-    evidenceRegions.push(region);
+  const primaryRegion = defectRegion || matchedRuleRegion || legacyRegions[0];
+
+  if (primaryRegion) {
+    evidenceRegions.push(primaryRegion);
   }
 
   return {
@@ -1113,6 +1108,8 @@ EVIDENCIA DISPONIBLE:
 - "Archivo de Referencia Anotado" = mapa visual de las zonas marcadas por el supervisor.
 
 INSTRUCCIONES DE DECISIÓN:
+- IMPORTANTE SOBRE POSICIÓN Y PERSPECTIVA: Las fotos a inspeccionar pueden tener ángulos, escala o perspectivas MUY diferentes a las referencias. Entiende SEMÁNTICAMENTE qué objeto, zona o característica (ej. un tornillo, una muesca, una marca) describe la regla y está delimitado en el golden sample (si lo hay). Luego, busca visualmente ese mismo objeto exacto en las fotos a inspeccionar, considerando la rotación y el ángulo, y marca sus contornos con la más alta precisión posible en \`matchedRuleRegion\`. ¡No uses las coordenadas referenciales copiadas literalmente si la perspectiva cambió!
+- IMPORTANTE SOBRE COORDENADAS: Todas las coordenadas (x, y, w, h) y los puntos de "polygon" deben ser valores PORCENTUALES relativos escalados del 0 al 100 respecto al tamaño de la imagen. El (0,0) es la esquina superior izquierda y (100,100) la esquina inferior derecha.
 - Evalúa cada regla por separado.
 - Usa la mejor foto del operador para cada regla según su viewConstraint.
 - Si una regla tiene viewConstraint = "multi_view_required", debes usar al menos 2 fotos del operador. Si no hay suficientes vistas útiles, esa regla queda en REVIEW.
@@ -1213,7 +1210,6 @@ ${rulesJson}
             .map((region: any) => normalizePercentRegion(region))
             .filter((region): region is PercentRegion => Boolean(region))
         : [];
-      const fallbackRuleZone = getRuleAnchorRegion(rule) || flattenRuleRegions(rule)[0] || null;
 
       const sortedEvidenceByArea = [...rawEvidenceRegions].sort(
         (a, b) => getPercentRegionArea(b) - getPercentRegionArea(a),
@@ -1232,46 +1228,7 @@ ${rulesJson}
       const reasonNotes: string[] = [];
       let forceReview = false;
 
-      if (!matchedRuleRegion && fallbackRuleZone) {
-        matchedRuleRegion = fallbackRuleZone;
-        reasonNotes.push(
-          'Se usó la zona definida por la regla como zona principal para mantener el anclaje semántico.',
-        );
-      }
-
-      if (matchedRuleRegion && fallbackRuleZone) {
-        const anchorArea = getPercentRegionArea(fallbackRuleZone);
-        const matchedArea = getPercentRegionArea(matchedRuleRegion);
-        const coverageRatio = getCoverageRatioAgainstAnchor(
-          matchedRuleRegion,
-          fallbackRuleZone,
-        );
-        const areaRatio =
-          anchorArea > 0 && matchedArea > 0 ? matchedArea / anchorArea : 0;
-        const looksLikeTinyPatch =
-          areaRatio > 0 && areaRatio < MIN_RULE_ZONE_AREA_RATIO;
-        const weakCoverage = coverageRatio < MIN_RULE_ZONE_COVERAGE_RATIO;
-
-        if (looksLikeTinyPatch || weakCoverage) {
-          if (!defectRegion) {
-            defectRegion = matchedRuleRegion;
-          }
-          matchedRuleRegion = fallbackRuleZone;
-
-          if (weakCoverage && coverageRatio < 0.05) {
-            forceReview = true;
-            reasonNotes.push(
-              'No fue posible mapear con confianza la zona completa de la regla en esta vista; requiere revisión humana.',
-            );
-          } else {
-            reasonNotes.push(
-              'Se ajustó la salida para representar la zona completa de la regla; la subzona puntual se conserva como incumplimiento.',
-            );
-          }
-        }
-      }
-
-      if (!matchedRuleRegion && !fallbackRuleZone) {
+      if (!matchedRuleRegion) {
         forceReview = true;
         reasonNotes.push(
           'No se pudo determinar la zona principal de la regla a partir de la evidencia recibida.',
