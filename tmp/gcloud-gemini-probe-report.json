@@ -1,0 +1,89 @@
+{
+  "timestamp": "2026-04-14T16:19:44.035Z",
+  "projectId": "mia-production-project",
+  "payloadPreview": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Devuelve SOLO JSON valido para una validacion CVQA simplificada con 1 regla: {overallStatus, summary, captur",
+  "results": [
+    {
+      "model": "gemini-3.1-flash",
+      "httpCode": 404,
+      "available": false,
+      "durationMs": 492,
+      "error": {
+        "code": 404,
+        "message": "Publisher Model `projects/mia-production-project/locations/us-central1/publishers/google/models/gemini-3.1-flash` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions",
+        "status": "NOT_FOUND"
+      }
+    },
+    {
+      "model": "gemini-3.1-flash-preview",
+      "httpCode": 404,
+      "available": false,
+      "durationMs": 379,
+      "error": {
+        "code": 404,
+        "message": "Publisher Model `projects/mia-production-project/locations/us-central1/publishers/google/models/gemini-3.1-flash-preview` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions",
+        "status": "NOT_FOUND"
+      }
+    },
+    {
+      "model": "gemini-3.1-flash-image-preview",
+      "httpCode": 404,
+      "available": false,
+      "durationMs": 376,
+      "error": {
+        "code": 404,
+        "message": "Publisher Model `projects/mia-production-project/locations/us-central1/publishers/google/models/gemini-3.1-flash-image-preview` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions",
+        "status": "NOT_FOUND"
+      }
+    },
+    {
+      "model": "gemini-3.1-flash-lite-preview",
+      "httpCode": 404,
+      "available": false,
+      "durationMs": 371,
+      "error": {
+        "code": 404,
+        "message": "Publisher Model `projects/mia-production-project/locations/us-central1/publishers/google/models/gemini-3.1-flash-lite-preview` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions",
+        "status": "NOT_FOUND"
+      }
+    },
+    {
+      "model": "gemini-3.1-flash-image-preview@default",
+      "httpCode": 404,
+      "available": false,
+      "durationMs": 439,
+      "error": {
+        "code": 404,
+        "message": "Publisher Model `projects/mia-production-project/locations/us-central1/publishers/google/models/gemini-3.1-flash-image-preview@default` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions",
+        "status": "NOT_FOUND"
+      }
+    },
+    {
+      "model": "gemini-3.1-flash-lite-preview@default",
+      "httpCode": 404,
+      "available": false,
+      "durationMs": 372,
+      "error": {
+        "code": 404,
+        "message": "Publisher Model `projects/mia-production-project/locations/us-central1/publishers/google/models/gemini-3.1-flash-lite-preview@default` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions",
+        "status": "NOT_FOUND"
+      }
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "httpCode": 200,
+      "available": true,
+      "durationMs": 3916,
+      "modelTextPreview": "{\n  \"overallStatus\": \"PASS\",\n  \"summary\": \"Simplified CVQA validation passed with one rule.\",\n  \"captureQuality\": {\n    \"status\": \"PASS\"\n  },\n  \"ruleResults\": [\n    {\n      \"ruleId\": \"rule-1\",\n      \"status\": \"PASS\",\n      \"sourceIndices\": [\n        0\n      ],\n      \"matchedRuleRegion\": {\n        \"h\": 80,\n        \"w\": 80,\n        \"x\": 10,\n        \"y\": 10\n      },\n      \"defectRegion\": {\n        \"h",
+      "normalization": {
+        "parseOk": true,
+        "hasCore": true,
+        "statusEnumOk": true,
+        "hasRuleCore": true,
+        "ruleStatusEnumOk": true,
+        "hasRegion": true,
+        "ruleCount": 1
+      }
+    }
+  ]
+}

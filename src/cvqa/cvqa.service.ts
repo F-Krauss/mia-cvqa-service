@@ -37,12 +37,14 @@ type ValidationViewConstraint =
   | 'multi_view_required';
 
 type PercentPoint = { x: number; y: number };
+type PercentRegionRole = 'rule_zone' | 'defect_zone' | 'context_region';
 type PercentRegion = {
   x?: number;
   y?: number;
   w?: number;
   h?: number;
   polygon?: PercentPoint[];
+  regionRole?: PercentRegionRole;
   color?: string;
   label?: string;
 };
@@ -88,6 +90,8 @@ type RuleEvaluation = {
   expectedState?: string;
   observedState?: string;
   sourceIndices: number[];
+  matchedRuleRegion?: PercentRegion;
+  defectRegion?: PercentRegion;
   evidenceRegions: PercentRegion[];
 };
 
@@ -160,6 +164,8 @@ const STATUS_COLOR_MAP: Record<ValidationStatus, string> = {
   FAIL: '#dc2626',
   REVIEW: '#f59e0b',
 };
+const MIN_RULE_ZONE_COVERAGE_RATIO = 0.3;
+const MIN_RULE_ZONE_AREA_RATIO = 0.2;
 
 const getDefaultStrictnessPercent = (severity: ValidationSeverity) => {
   switch (severity) {
@@ -511,6 +517,175 @@ const fingerprintBuffer = (buffer: Buffer) =>
 const isSvgMimeType = (mimeType?: string) =>
   String(mimeType || '').toLowerCase().includes('svg');
 
+const normalizeRegionRole = (value: unknown): PercentRegionRole | undefined => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (
+    normalized === 'rule_zone' ||
+    normalized === 'defect_zone' ||
+    normalized === 'context_region'
+  ) {
+    return normalized;
+  }
+  return undefined;
+};
+
+const normalizePercentRegion = (region: any): PercentRegion | null => {
+  if (!region || typeof region !== 'object') return null;
+
+  const polygon = Array.isArray(region?.polygon)
+    ? region.polygon
+        .map((point: any) => {
+          const x = normalizePercentNumber(point?.x);
+          const y = normalizePercentNumber(point?.y);
+          return x == null || y == null ? null : { x, y };
+        })
+        .filter((point): point is PercentPoint => Boolean(point))
+    : [];
+
+  const x = normalizePercentNumber(region?.x);
+  const y = normalizePercentNumber(region?.y);
+  const w = normalizePercentNumber(region?.w);
+  const h = normalizePercentNumber(region?.h);
+  if (polygon.length === 0 && (x == null || y == null || w == null || h == null)) {
+    return null;
+  }
+
+  return {
+    x,
+    y,
+    w,
+    h,
+    polygon,
+    regionRole: normalizeRegionRole(region?.regionRole),
+    color: normalizeString(region?.color),
+    label: normalizeString(region?.label),
+  };
+};
+
+const getPercentRegionBounds = (region?: PercentRegion | null) => {
+  if (!region) return null;
+  if (
+    region.x != null &&
+    region.y != null &&
+    region.w != null &&
+    region.h != null &&
+    region.w > 0 &&
+    region.h > 0
+  ) {
+    return { x: region.x, y: region.y, w: region.w, h: region.h };
+  }
+  if (Array.isArray(region.polygon) && region.polygon.length > 0) {
+    const xs = region.polygon.map((point) => point.x);
+    const ys = region.polygon.map((point) => point.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const width = Math.max(0, maxX - minX);
+    const height = Math.max(0, maxY - minY);
+    if (width > 0 && height > 0) {
+      return { x: minX, y: minY, w: width, h: height };
+    }
+  }
+  return null;
+};
+
+const getPolygonArea = (polygon: PercentPoint[]) => {
+  if (polygon.length < 3) return 0;
+  let area = 0;
+  for (let index = 0; index < polygon.length; index += 1) {
+    const current = polygon[index];
+    const next = polygon[(index + 1) % polygon.length];
+    area += current.x * next.y - next.x * current.y;
+  }
+  return Math.abs(area / 2);
+};
+
+const getPercentRegionArea = (region?: PercentRegion | null) => {
+  if (!region) return 0;
+  if (Array.isArray(region.polygon) && region.polygon.length >= 3) {
+    const polygonArea = getPolygonArea(region.polygon);
+    if (polygonArea > 0) return polygonArea;
+  }
+  if (
+    region.x != null &&
+    region.y != null &&
+    region.w != null &&
+    region.h != null &&
+    region.w > 0 &&
+    region.h > 0
+  ) {
+    return region.w * region.h;
+  }
+  const bounds = getPercentRegionBounds(region);
+  return bounds ? bounds.w * bounds.h : 0;
+};
+
+const getCoverageRatioAgainstAnchor = (
+  candidate?: PercentRegion | null,
+  anchor?: PercentRegion | null,
+) => {
+  const candidateBounds = getPercentRegionBounds(candidate);
+  const anchorBounds = getPercentRegionBounds(anchor);
+  if (!candidateBounds || !anchorBounds) return 0;
+
+  const overlapW = Math.max(
+    0,
+    Math.min(candidateBounds.x + candidateBounds.w, anchorBounds.x + anchorBounds.w) -
+      Math.max(candidateBounds.x, anchorBounds.x),
+  );
+  const overlapH = Math.max(
+    0,
+    Math.min(candidateBounds.y + candidateBounds.h, anchorBounds.y + anchorBounds.h) -
+      Math.max(candidateBounds.y, anchorBounds.y),
+  );
+  const overlapArea = overlapW * overlapH;
+  const anchorArea = anchorBounds.w * anchorBounds.h;
+  if (anchorArea <= 0) return 0;
+  return clampScore(overlapArea / anchorArea);
+};
+
+const buildPercentRegionKey = (region: PercentRegion) => {
+  const round = (value: number | undefined) =>
+    value == null ? 'na' : String(Math.round(value * 100) / 100);
+  const polygon = Array.isArray(region.polygon)
+    ? region.polygon
+        .map((point) => `${round(point.x)}:${round(point.y)}`)
+        .join('|')
+    : '';
+  return [
+    region.regionRole || 'none',
+    round(region.x),
+    round(region.y),
+    round(region.w),
+    round(region.h),
+    polygon,
+  ].join('::');
+};
+
+const getRuleAnchorRegion = (rule: VisionValidationRule): PercentRegion | null => {
+  const focusBounds = getRuleFocusBounds(rule);
+  if (focusBounds) {
+    return {
+      ...focusBounds,
+      regionRole: 'rule_zone',
+      label: rule.name || rule.id,
+    };
+  }
+
+  const firstPolygon = [...(rule.roi || []), ...(rule.paths || [])].find(
+    (path) => path.length >= 3,
+  );
+  if (firstPolygon) {
+    return {
+      polygon: firstPolygon,
+      regionRole: 'rule_zone',
+      label: rule.name || rule.id,
+    };
+  }
+  return null;
+};
+
 const flattenRuleRegions = (rule: VisionValidationRule): PercentRegion[] => {
   const regions: PercentRegion[] = [];
   if (rule.highlight) {
@@ -519,33 +694,78 @@ const flattenRuleRegions = (rule: VisionValidationRule): PercentRegion[] => {
       y: rule.highlight.y,
       w: rule.highlight.w,
       h: rule.highlight.h,
+      regionRole: 'rule_zone',
     });
   }
   for (const polygon of [...(rule.roi || []), ...(rule.paths || [])]) {
-    if (polygon.length > 0) regions.push({ polygon });
+    if (polygon.length > 0) regions.push({ polygon, regionRole: 'rule_zone' });
   }
   return regions;
 };
 
 const ensureEvidenceRegions = (
-  regions: PercentRegion[],
   rule: VisionValidationRule,
   status: ValidationStatus,
-): PercentRegion[] => {
-  if (regions.length > 0) {
-    return regions.map((region) => ({
-      ...region,
-      color: region.color || STATUS_COLOR_MAP[status],
-      label: region.label || rule.name || rule.id,
-    }));
-  }
-  const fallbacks = flattenRuleRegions(rule);
-  if (fallbacks.length === 0) return [];
-  return fallbacks.map((region) => ({
+  options?: {
+    matchedRuleRegion?: PercentRegion | null;
+    defectRegion?: PercentRegion | null;
+    evidenceRegions?: PercentRegion[];
+  },
+): {
+  matchedRuleRegion?: PercentRegion;
+  defectRegion?: PercentRegion;
+  evidenceRegions: PercentRegion[];
+} => {
+  const statusPolygonColor =
+    status === 'PASS' ? STATUS_COLOR_MAP.PASS : STATUS_COLOR_MAP.FAIL;
+  const fallbackRuleZone = getRuleAnchorRegion(rule) || flattenRuleRegions(rule)[0];
+  const matchedRuleRegion =
+    options?.matchedRuleRegion || fallbackRuleZone
+      ? {
+          ...(options?.matchedRuleRegion || fallbackRuleZone)!,
+          regionRole: 'rule_zone' as PercentRegionRole,
+          color:
+            (options?.matchedRuleRegion || fallbackRuleZone)?.color ||
+            statusPolygonColor,
+          label:
+            (options?.matchedRuleRegion || fallbackRuleZone)?.label ||
+            `Zona de regla${rule.name ? ` · ${rule.name}` : ''}`,
+        }
+      : undefined;
+
+  const defectRegion = options?.defectRegion
+    ? {
+        ...options.defectRegion,
+        regionRole: 'defect_zone' as PercentRegionRole,
+        color: options.defectRegion.color || STATUS_COLOR_MAP.FAIL,
+        label:
+          options.defectRegion.label ||
+          `Incumplimiento${rule.name ? ` · ${rule.name}` : ''}`,
+      }
+    : undefined;
+
+  const legacyRegions = (options?.evidenceRegions || []).map((region) => ({
     ...region,
-    color: STATUS_COLOR_MAP[status],
-    label: rule.name || rule.id,
+    regionRole: region.regionRole || 'context_region',
+    color: region.color || statusPolygonColor,
+    label: region.label || rule.name || rule.id,
   }));
+
+  const unique = new Set<string>();
+  const evidenceRegions: PercentRegion[] = [];
+  for (const region of [matchedRuleRegion, defectRegion, ...legacyRegions]) {
+    if (!region) continue;
+    const key = buildPercentRegionKey(region);
+    if (unique.has(key)) continue;
+    unique.add(key);
+    evidenceRegions.push(region);
+  }
+
+  return {
+    matchedRuleRegion,
+    defectRegion,
+    evidenceRegions,
+  };
 };
 
 const buildChecksMap = (ruleResults: RuleEvaluation[]) =>
@@ -855,6 +1075,7 @@ export class CvqaService {
                   : 'Muy flexible: acepta variaciones visibles si la regla sigue cumpliéndose.',
         viewConstraint: rule.viewConstraint,
         humanReviewRequiredWhen: rule.humanReviewRequiredWhen,
+        ruleZoneAnchor: getRuleAnchorRegion(rule),
         regionSummary: formatRuleRegionSummary(rule),
         negativeReferenceFileNames: (rule.negativeReferences || [])
           .map((entry) => entry.fileName)
@@ -899,13 +1120,19 @@ INSTRUCCIONES DE DECISIÓN:
 - Si la imagen es ambigua, borrosa, con mala iluminación, o la vista no permite comprobar la regla, usa REVIEW.
 - Nunca conviertas automáticamente un FAIL en PASS.
 - Si el tornillo, cabeza, borde, gap o plano sobresale cuando la regla pide flushness/al ras, es FAIL.
-- Cuando la regla incluya ROI o zona marcada, limita el análisis a esa zona antes de evaluar el resto.
+- Cuando la regla incluya ROI o zona marcada, esa zona es el ancla semántica obligatoria de la regla.
+- Para cada regla, primero mapea la zona funcional completa en la foto del operador y devuélvela como matchedRuleRegion.
+- matchedRuleRegion no puede ser solo un parche pequeño de defecto; debe cubrir la zona completa equivalente a la regla.
+- Si detectas incumplimiento puntual dentro de esa zona, reporta además defectRegion con la subzona específica.
+- Si no puedes mapear con confianza la zona completa por perspectiva/oclusión/calidad, devuelve REVIEW y explica la causa.
 - Para color_mark, permite pequeñas variaciones por iluminación, pero no apruebes si la marca no existe o el color es claramente incorrecto.
 - Respeta strictnessPercent: 100% significa que no debes tolerar cambios pequeños; 0% significa que puedes tolerar pequeñas variaciones visuales mientras la regla siga cumpliéndose.
 
 SALIDA OBLIGATORIA:
 - Devuelve solo JSON válido con el esquema solicitado.
-- En evidenceRegions devuelve coordenadas porcentuales 0..100 relativas a la foto del operador seleccionada.
+- matchedRuleRegion es obligatorio para cada regla y debe estar en coordenadas porcentuales 0..100 relativas a la foto del operador seleccionada.
+- defectRegion es opcional y representa únicamente la subzona del incumplimiento.
+- Para compatibilidad, en evidenceRegions incluye matchedRuleRegion y, cuando exista, también defectRegion.
 - Siempre incluye sourceIndices para cada regla. Usa índices base 0.
 - Si una región ya está marcada por el supervisor y coincide con la evidencia, puedes reutilizar esa misma zona.
 
@@ -980,62 +1207,113 @@ ${rulesJson}
             ? [0]
             : [];
 
-      const evidenceRegions = Array.isArray(raw?.evidenceRegions)
+      const rawEvidenceRegions = Array.isArray(raw?.evidenceRegions)
         ? raw.evidenceRegions
-            .map((region: any) => {
-              const polygon = Array.isArray(region?.polygon)
-                ? region.polygon
-                    .map((point: any) => {
-                      const x = normalizePercentNumber(point?.x);
-                      const y = normalizePercentNumber(point?.y);
-                      return x == null || y == null ? null : { x, y };
-                    })
-                    .filter(Boolean)
-                : [];
-              const x = normalizePercentNumber(region?.x);
-              const y = normalizePercentNumber(region?.y);
-              const w = normalizePercentNumber(region?.w);
-              const h = normalizePercentNumber(region?.h);
-              if (
-                polygon.length === 0 &&
-                (x == null || y == null || w == null || h == null)
-              ) {
-                return null;
-              }
-              return {
-                x,
-                y,
-                w,
-                h,
-                polygon,
-                color: normalizeString(region?.color),
-                label: normalizeString(region?.label),
-              } as PercentRegion;
-            })
-            .filter(Boolean)
+            .map((region: any) => normalizePercentRegion(region))
+            .filter((region): region is PercentRegion => Boolean(region))
         : [];
+      const fallbackRuleZone = getRuleAnchorRegion(rule) || flattenRuleRegions(rule)[0] || null;
 
-      const status = normalizeStatus(raw?.status);
+      const sortedEvidenceByArea = [...rawEvidenceRegions].sort(
+        (a, b) => getPercentRegionArea(b) - getPercentRegionArea(a),
+      );
+
+      let matchedRuleRegion =
+        normalizePercentRegion(raw?.matchedRuleRegion) ||
+        normalizePercentRegion(raw?.ruleRegion) ||
+        sortedEvidenceByArea[0] ||
+        null;
+      let defectRegion =
+        normalizePercentRegion(raw?.defectRegion) ||
+        normalizePercentRegion(raw?.nonComplianceRegion) ||
+        null;
+
+      const reasonNotes: string[] = [];
+      let forceReview = false;
+
+      if (!matchedRuleRegion && fallbackRuleZone) {
+        matchedRuleRegion = fallbackRuleZone;
+        reasonNotes.push(
+          'Se usó la zona definida por la regla como zona principal para mantener el anclaje semántico.',
+        );
+      }
+
+      if (matchedRuleRegion && fallbackRuleZone) {
+        const anchorArea = getPercentRegionArea(fallbackRuleZone);
+        const matchedArea = getPercentRegionArea(matchedRuleRegion);
+        const coverageRatio = getCoverageRatioAgainstAnchor(
+          matchedRuleRegion,
+          fallbackRuleZone,
+        );
+        const areaRatio =
+          anchorArea > 0 && matchedArea > 0 ? matchedArea / anchorArea : 0;
+        const looksLikeTinyPatch =
+          areaRatio > 0 && areaRatio < MIN_RULE_ZONE_AREA_RATIO;
+        const weakCoverage = coverageRatio < MIN_RULE_ZONE_COVERAGE_RATIO;
+
+        if (looksLikeTinyPatch || weakCoverage) {
+          if (!defectRegion) {
+            defectRegion = matchedRuleRegion;
+          }
+          matchedRuleRegion = fallbackRuleZone;
+
+          if (weakCoverage && coverageRatio < 0.05) {
+            forceReview = true;
+            reasonNotes.push(
+              'No fue posible mapear con confianza la zona completa de la regla en esta vista; requiere revisión humana.',
+            );
+          } else {
+            reasonNotes.push(
+              'Se ajustó la salida para representar la zona completa de la regla; la subzona puntual se conserva como incumplimiento.',
+            );
+          }
+        }
+      }
+
+      if (!matchedRuleRegion && !fallbackRuleZone) {
+        forceReview = true;
+        reasonNotes.push(
+          'No se pudo determinar la zona principal de la regla a partir de la evidencia recibida.',
+        );
+      }
+
+      const statusFromModel = normalizeStatus(raw?.status);
+      const status = forceReview ? 'REVIEW' : statusFromModel;
+      const normalizedRegions = ensureEvidenceRegions(rule, status, {
+        matchedRuleRegion,
+        defectRegion,
+        evidenceRegions: rawEvidenceRegions,
+      });
+      const normalizedReason = normalizeString(raw?.reason);
+      const reason = [
+        normalizedReason,
+        status === 'REVIEW' && !normalizedReason
+          ? 'La evidencia no fue suficiente para validar esta regla.'
+          : undefined,
+        ...reasonNotes,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+
+      const normalizedConfidence = normalizeScore(raw?.confidence);
       return {
         ruleId: rule.id,
         name: normalizeString(raw?.name) || rule.name || rule.description,
         status,
         confidence:
-          normalizeScore(raw?.confidence) ??
+          (forceReview ? null : normalizedConfidence) ??
           (status === 'PASS'
             ? deriveThresholdsFromStrictness(rule.strictnessPercent).passMin
             : status === 'FAIL'
               ? 1
               : null),
-        reason:
-          normalizeString(raw?.reason) ||
-          (status === 'REVIEW'
-            ? 'La evidencia no fue suficiente para validar esta regla.'
-            : undefined),
+        reason: reason || undefined,
         expectedState: normalizeString(raw?.expectedState) || rule.passCriteria,
         observedState: normalizeString(raw?.observedState),
         sourceIndices,
-        evidenceRegions: ensureEvidenceRegions(evidenceRegions, rule, status),
+        matchedRuleRegion: normalizedRegions.matchedRuleRegion,
+        defectRegion: normalizedRegions.defectRegion,
+        evidenceRegions: normalizedRegions.evidenceRegions,
       };
     });
   }
@@ -1101,6 +1379,7 @@ ${rulesJson}
       (rule) => rule.viewConstraint === 'multi_view_required',
     );
     const ruleResults = affectedRules.map((rule) => ({
+      ...ensureEvidenceRegions(rule, 'REVIEW'),
       ruleId: rule.id,
       name: rule.name || rule.description,
       status: 'REVIEW' as ValidationStatus,
@@ -1110,7 +1389,6 @@ ${rulesJson}
       expectedState: rule.passCriteria,
       observedState: `Se recibieron ${evidenceCount} foto(s).`,
       sourceIndices: Array.from({ length: evidenceCount }, (_, index) => index),
-      evidenceRegions: ensureEvidenceRegions([], rule, 'REVIEW'),
     }));
     return {
       status: 'REVIEW',
@@ -1166,7 +1444,11 @@ ${rulesJson}
         .flatMap((result) =>
           result.evidenceRegions.map((region) => ({
             ...region,
-            color: region.color || STATUS_COLOR_MAP[result.status],
+            color:
+              region.color ||
+              (result.status === 'PASS'
+                ? STATUS_COLOR_MAP.PASS
+                : STATUS_COLOR_MAP.FAIL),
             label: region.label || result.name || result.ruleId,
           })),
         );
@@ -1407,6 +1689,58 @@ ${rulesJson}
                       type: 'ARRAY' as any,
                       items: { type: 'NUMBER' as any },
                     },
+                    matchedRuleRegion: {
+                      type: 'OBJECT' as any,
+                      properties: {
+                        x: { type: 'NUMBER' as any },
+                        y: { type: 'NUMBER' as any },
+                        w: { type: 'NUMBER' as any },
+                        h: { type: 'NUMBER' as any },
+                        label: { type: 'STRING' as any },
+                        color: { type: 'STRING' as any },
+                        regionRole: {
+                          type: 'STRING' as any,
+                          enum: ['rule_zone', 'defect_zone', 'context_region'],
+                        },
+                        polygon: {
+                          type: 'ARRAY' as any,
+                          items: {
+                            type: 'OBJECT' as any,
+                            properties: {
+                              x: { type: 'NUMBER' as any },
+                              y: { type: 'NUMBER' as any },
+                            },
+                            required: ['x', 'y'],
+                          },
+                        },
+                      },
+                    },
+                    defectRegion: {
+                      type: 'OBJECT' as any,
+                      properties: {
+                        x: { type: 'NUMBER' as any },
+                        y: { type: 'NUMBER' as any },
+                        w: { type: 'NUMBER' as any },
+                        h: { type: 'NUMBER' as any },
+                        label: { type: 'STRING' as any },
+                        color: { type: 'STRING' as any },
+                        regionRole: {
+                          type: 'STRING' as any,
+                          enum: ['rule_zone', 'defect_zone', 'context_region'],
+                        },
+                        polygon: {
+                          type: 'ARRAY' as any,
+                          items: {
+                            type: 'OBJECT' as any,
+                            properties: {
+                              x: { type: 'NUMBER' as any },
+                              y: { type: 'NUMBER' as any },
+                            },
+                            required: ['x', 'y'],
+                          },
+                        },
+                      },
+                    },
                     evidenceRegions: {
                       type: 'ARRAY' as any,
                       items: {
@@ -1418,6 +1752,10 @@ ${rulesJson}
                           h: { type: 'NUMBER' as any },
                           label: { type: 'STRING' as any },
                           color: { type: 'STRING' as any },
+                          regionRole: {
+                            type: 'STRING' as any,
+                            enum: ['rule_zone', 'defect_zone', 'context_region'],
+                          },
                           polygon: {
                             type: 'ARRAY' as any,
                             items: {
@@ -1433,7 +1771,7 @@ ${rulesJson}
                       },
                     },
                   },
-                  required: ['ruleId', 'status', 'sourceIndices'],
+                  required: ['ruleId', 'status', 'sourceIndices', 'matchedRuleRegion'],
                 },
               },
             },

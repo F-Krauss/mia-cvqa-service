@@ -1,0 +1,4 @@
+[gcloud-probe] Listing model-garden entries matching gemini-3.1-flash...
+MODEL_ID                                                         CAN_DEPLOY  CAN_PREDICT
+publishers/google/models/gemini-3.1-flash-image-preview@default  No          Yes
+publishers/google/models/gemini-3.1-flash-lite-preview@default   No          Yes

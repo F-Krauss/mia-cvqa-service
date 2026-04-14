@@ -1,0 +1,162 @@
+{
+  "timestamp": "2026-04-14T16:09:41.069Z",
+  "projectId": "gen...411",
+  "locations": [
+    "global",
+    "us-central1"
+  ],
+  "configuredLocation": "us-central1",
+  "models": [
+    "gemini-3.1-flash",
+    "gemini-3.1-flash-preview",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash"
+  ],
+  "results": [
+    {
+      "modelId": "gemini-3.1-flash",
+      "location": "global",
+      "available": false,
+      "durationMs": 1463,
+      "parseOk": false,
+      "normalizeOk": false,
+      "compatibleWithCvqaContract": false,
+      "issues": [],
+      "errorMessage": "Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+      "errorStackPreview": "SyntaxError: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON\n    at JSON.parse (<anonymous>)\n    at parseJSONFromBytes (node:internal/deps/undici/undici:6433:19)\n    at successSteps (node:internal/deps/undici/undici:6414:27)\n    at readAllBytes (node:internal/deps/undici/undici:5380:13)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)"
+    },
+    {
+      "modelId": "gemini-3.1-flash-preview",
+      "location": "global",
+      "available": false,
+      "durationMs": 159,
+      "parseOk": false,
+      "normalizeOk": false,
+      "compatibleWithCvqaContract": false,
+      "issues": [],
+      "errorMessage": "Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+      "errorStackPreview": "SyntaxError: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON\n    at JSON.parse (<anonymous>)\n    at parseJSONFromBytes (node:internal/deps/undici/undici:6433:19)\n    at successSteps (node:internal/deps/undici/undici:6414:27)\n    at readAllBytes (node:internal/deps/undici/undici:5380:13)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)"
+    },
+    {
+      "modelId": "gemini-3-flash-preview",
+      "location": "global",
+      "available": false,
+      "durationMs": 177,
+      "parseOk": false,
+      "normalizeOk": false,
+      "compatibleWithCvqaContract": false,
+      "issues": [],
+      "errorMessage": "Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+      "errorStackPreview": "SyntaxError: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON\n    at JSON.parse (<anonymous>)\n    at parseJSONFromBytes (node:internal/deps/undici/undici:6433:19)\n    at successSteps (node:internal/deps/undici/undici:6414:27)\n    at readAllBytes (node:internal/deps/undici/undici:5380:13)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)"
+    },
+    {
+      "modelId": "gemini-2.5-flash",
+      "location": "global",
+      "available": false,
+      "durationMs": 161,
+      "parseOk": false,
+      "normalizeOk": false,
+      "compatibleWithCvqaContract": false,
+      "issues": [],
+      "errorMessage": "Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+      "errorStackPreview": "SyntaxError: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON\n    at JSON.parse (<anonymous>)\n    at parseJSONFromBytes (node:internal/deps/undici/undici:6433:19)\n    at successSteps (node:internal/deps/undici/undici:6414:27)\n    at readAllBytes (node:internal/deps/undici/undici:5380:13)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)"
+    },
+    {
+      "modelId": "gemini-3.1-flash",
+      "location": "us-central1",
+      "available": false,
+      "durationMs": 1067,
+      "parseOk": false,
+      "normalizeOk": false,
+      "compatibleWithCvqaContract": false,
+      "issues": [],
+      "errorMessage": "[VertexAI.ClientError]: got status: 404 Not Found. {\"error\":{\"code\":404,\"message\":\"Publisher Model `projects/gen-lang-client-0316940411/locations/us-central1/publishers/google/models/gemini-3.1-flash` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions\",\"status\":\"NOT_FOUND\"}}",
+      "errorStackPreview": "ClientError: [VertexAI.ClientError]: got status: 404 Not Found. {\"error\":{\"code\":404,\"message\":\"Publisher Model `projects/gen-lang-client-0316940411/locations/us-central1/publishers/google/models/gemini-3.1-flash` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generative-ai/d"
+    },
+    {
+      "modelId": "gemini-3.1-flash-preview",
+      "location": "us-central1",
+      "available": false,
+      "durationMs": 103,
+      "parseOk": false,
+      "normalizeOk": false,
+      "compatibleWithCvqaContract": false,
+      "issues": [],
+      "errorMessage": "[VertexAI.ClientError]: got status: 404 Not Found. {\"error\":{\"code\":404,\"message\":\"Publisher Model `projects/gen-lang-client-0316940411/locations/us-central1/publishers/google/models/gemini-3.1-flash-preview` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions\",\"status\":\"NOT_FOUND\"}}",
+      "errorStackPreview": "ClientError: [VertexAI.ClientError]: got status: 404 Not Found. {\"error\":{\"code\":404,\"message\":\"Publisher Model `projects/gen-lang-client-0316940411/locations/us-central1/publishers/google/models/gemini-3.1-flash-preview` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generat"
+    },
+    {
+      "modelId": "gemini-3-flash-preview",
+      "location": "us-central1",
+      "available": false,
+      "durationMs": 239,
+      "parseOk": false,
+      "normalizeOk": false,
+      "compatibleWithCvqaContract": false,
+      "issues": [],
+      "errorMessage": "[VertexAI.ClientError]: got status: 404 Not Found. {\"error\":{\"code\":404,\"message\":\"Publisher Model `projects/gen-lang-client-0316940411/locations/us-central1/publishers/google/models/gemini-3-flash-preview` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions\",\"status\":\"NOT_FOUND\"}}",
+      "errorStackPreview": "ClientError: [VertexAI.ClientError]: got status: 404 Not Found. {\"error\":{\"code\":404,\"message\":\"Publisher Model `projects/gen-lang-client-0316940411/locations/us-central1/publishers/google/models/gemini-3-flash-preview` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generativ"
+    },
+    {
+      "modelId": "gemini-2.5-flash",
+      "location": "us-central1",
+      "available": true,
+      "durationMs": 6169,
+      "parseOk": true,
+      "normalizeOk": true,
+      "compatibleWithCvqaContract": true,
+      "issues": [],
+      "rawTextPreview": "{\n  \"overallStatus\": \"FAIL\",\n  \"summary\": \"Se detectó un tornillo que no está enrasado, lo que resulta en un fallo para la regla 'Tornillo enrasado'.\",\n  \"captureQuality\": {\n    \"status\": \"PASS\",\n    \"blur\": 0.1,\n    \"exposure\": 0.5,\n    \"framing\": 0.9,\n    \"issues\": [],\n    \"occlusion\": 0.05\n  },\n  \"ruleResults\": [\n    {\n      \"ruleId\": \"rule-1\",\n      \"status\": \"FAIL\",\n      \"sourceIndices\": [0],\n      \"matchedRuleRegion\": {\n        \"h\": 20,\n        \"regionRole\": \"rule_zone\",\n        \"w\": 20,\n        \"x\": 40,\n        \"y\": 40\n      },\n      \"confidence\": 0.95,\n      \"defectRegion\": {\n        ",
+      "normalizedPreview": {
+        "overallStatus": "FAIL",
+        "summary": "Se detectó un tornillo que no está enrasado, lo que resulta en un fallo para la regla 'Tornillo enrasado'.",
+        "captureQualityStatus": "PASS",
+        "ruleResults": [
+          {
+            "ruleId": "rule-1",
+            "status": "FAIL",
+            "confidence": 0.95,
+            "reason": "La cabeza del tornillo sobresale de la superficie, no está al ras.",
+            "sourceIndices": [
+              0
+            ],
+            "matchedRuleRegion": {
+              "x": 40,
+              "y": 40,
+              "w": 20,
+              "h": 20,
+              "polygon": [],
+              "regionRole": "rule_zone"
+            },
+            "defectRegion": {
+              "x": 45,
+              "y": 45,
+              "w": 10,
+              "h": 10,
+              "polygon": [],
+              "regionRole": "defect_zone"
+            },
+            "evidenceRegions": [
+              {
+                "x": 40,
+                "y": 40,
+                "w": 20,
+                "h": 20,
+                "polygon": [],
+                "regionRole": "rule_zone"
+              },
+              {
+                "x": 45,
+                "y": 45,
+                "w": 10,
+                "h": 10,
+                "polygon": [],
+                "regionRole": "defect_zone"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
