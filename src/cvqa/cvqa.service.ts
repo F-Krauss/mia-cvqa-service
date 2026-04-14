@@ -125,7 +125,7 @@ const DEFAULT_PRIMARY_MODEL_ID =
   process.env.VERTEX_MODEL_ID ||
   'gemini-3-flash-preview';
 const DEFAULT_FALLBACK_MODEL_IDS = ['gemini-2.5-flash'];
-const DEFAULT_COMPARE_TIMEOUT_MS = 55_000;
+const DEFAULT_COMPARE_TIMEOUT_MS = 115_000;
 const SMALL_IMAGE_BYTES_THRESHOLD = 256 * 1024;
 const LIGHT_IMAGE_MAX_DIMENSION = 1024;
 const DEFAULT_IMAGE_MAX_DIMENSION = 1536;
@@ -1121,9 +1121,10 @@ INSTRUCCIONES DE DECISIÓN:
 - Nunca conviertas automáticamente un FAIL en PASS.
 - Si el tornillo, cabeza, borde, gap o plano sobresale cuando la regla pide flushness/al ras, es FAIL.
 - Cuando la regla incluya ROI o zona marcada, esa zona es el ancla semántica obligatoria de la regla.
-- Para cada regla, primero mapea la zona funcional completa en la foto del operador y devuélvela como matchedRuleRegion.
+- Para cada regla, primero mapea la zona funcional completa en la foto del operador y devuélvela como matchedRuleRegion (preferiblemente usando un "polygon" detallado para mayor precisión visual).
 - matchedRuleRegion no puede ser solo un parche pequeño de defecto; debe cubrir la zona completa equivalente a la regla.
-- Si detectas incumplimiento puntual dentro de esa zona, reporta además defectRegion con la subzona específica.
+- Si detectas incumplimiento puntual dentro de esa zona, reporta además defectRegion con la subzona específica (usa un "polygon" si es posible).
+- En el campo "reason", debes explicar siempre de forma clara y concisa por qué la regla fue evaluada como PASS, FAIL o REVIEW. Si es FAIL, justifica exactamente el defecto encontrado.
 - Si no puedes mapear con confianza la zona completa por perspectiva/oclusión/calidad, devuelve REVIEW y explica la causa.
 - Para color_mark, permite pequeñas variaciones por iluminación, pero no apruebes si la marca no existe o el color es claramente incorrecto.
 - Respeta strictnessPercent: 100% significa que no debes tolerar cambios pequeños; 0% significa que puedes tolerar pequeñas variaciones visuales mientras la regla siga cumpliéndose.
