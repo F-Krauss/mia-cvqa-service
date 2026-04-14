@@ -1118,9 +1118,9 @@ INSTRUCCIONES DE DECISIÓN:
 - Nunca conviertas automáticamente un FAIL en PASS.
 - Si el tornillo, cabeza, borde, gap o plano sobresale cuando la regla pide flushness/al ras, es FAIL.
 - Cuando la regla incluya ROI o zona marcada, esa zona es el ancla semántica obligatoria de la regla.
-- Para cada regla, primero mapea la zona funcional completa en la foto del operador y devuélvela como matchedRuleRegion (preferiblemente usando un "polygon" detallado para mayor precisión visual).
+- Para cada regla, primero mapea la zona funcional completa en la foto del operador y devuélvela como matchedRuleRegion. PREFIERE CAJAS DELIMITADORAS (rectángulos). Usa los campos \`x, y\` (esquina superior-izquierda) y \`w, h\` (ancho y alto relativos) para envolver el objeto clave (ej. el tornillo completo) de la manera más perfecta, justa y ajustada posible. Abstente de usar el array de "polygon" porque suele producir formas inexactas, a menos que el contorno sea extremadamente irregular.
 - matchedRuleRegion no puede ser solo un parche pequeño de defecto; debe cubrir la zona completa equivalente a la regla.
-- Si detectas incumplimiento puntual dentro de esa zona, reporta además defectRegion con la subzona específica (usa un "polygon" si es posible).
+- Si detectas incumplimiento puntual dentro de esa zona, reporta además defectRegion con la subzona específica (preferentemente usando también \`x, y, w, h\` muy ajustados).
 - En el campo "reason", debes explicar siempre de forma clara y concisa por qué la regla fue evaluada como PASS, FAIL o REVIEW. Si es FAIL, justifica exactamente el defecto encontrado.
 - Si no puedes mapear con confianza la zona completa por perspectiva/oclusión/calidad, devuelve REVIEW y explica la causa.
 - Para color_mark, permite pequeñas variaciones por iluminación, pero no apruebes si la marca no existe o el color es claramente incorrecto.
@@ -1672,6 +1672,7 @@ ${rulesJson}
                           },
                         },
                       },
+                      required: ['x', 'y', 'w', 'h'],
                     },
                     defectRegion: {
                       type: 'OBJECT' as any,
@@ -1698,6 +1699,7 @@ ${rulesJson}
                           },
                         },
                       },
+                      required: ['x', 'y', 'w', 'h'],
                     },
                     evidenceRegions: {
                       type: 'ARRAY' as any,
@@ -1726,6 +1728,7 @@ ${rulesJson}
                             },
                           },
                         },
+                        required: ['x', 'y', 'w', 'h'],
                       },
                     },
                   },
