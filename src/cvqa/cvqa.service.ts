@@ -54,6 +54,7 @@ type VisionValidationRule = {
   severity: ValidationSeverity;
   checkType: ValidationCheckType;
   passCriteria?: string;
+  strictnessPercent: number;
   color?: string;
   highlight?: { x?: number; y?: number; w?: number; h?: number };
   paths?: Array<PercentPoint[]>;
@@ -65,12 +66,6 @@ type VisionValidationRule = {
     mimeType?: string;
   }>;
   viewConstraint: ValidationViewConstraint;
-  thresholds: {
-    passMin: number;
-    failMax: number;
-    reviewBelow: number;
-  };
-  allowances?: Record<string, unknown> | string | null;
   humanReviewRequiredWhen: string[];
 };
 
@@ -166,18 +161,24 @@ const STATUS_COLOR_MAP: Record<ValidationStatus, string> = {
   REVIEW: '#f59e0b',
 };
 
-const getDefaultThresholds = (
-  severity: ValidationSeverity,
-): VisionValidationRule['thresholds'] => {
+const getDefaultStrictnessPercent = (severity: ValidationSeverity) => {
   switch (severity) {
     case 'critical':
-      return { passMin: 0.9, failMax: 0.74, reviewBelow: 0.89 };
+      return 90;
     case 'minor':
-      return { passMin: 0.8, failMax: 0.64, reviewBelow: 0.79 };
+      return 60;
     case 'major':
     default:
-      return { passMin: 0.85, failMax: 0.69, reviewBelow: 0.84 };
+      return 75;
   }
+};
+
+const deriveThresholdsFromStrictness = (strictnessPercent: number) => {
+  const strictness = clampNumber(strictnessPercent, 0, 100) / 100;
+  const passMin = clampScore(0.72 + strictness * 0.24);
+  const reviewBelow = clampScore(passMin - (0.12 - strictness * 0.03));
+  const failMax = clampScore(reviewBelow - 0.08);
+  return { passMin, reviewBelow, failMax };
 };
 
 const parseCsvList = (value: string | undefined, fallback: string[]) => {
@@ -286,35 +287,6 @@ const normalizeRulePaths = (value: unknown): Array<PercentPoint[]> => {
     .filter((path: PercentPoint[]) => path.length > 0);
 };
 
-const normalizeAllowances = (value: unknown) => {
-  if (value == null) return undefined;
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed) return undefined;
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      return trimmed;
-    }
-  }
-  if (typeof value === 'object') return value as Record<string, unknown>;
-  return undefined;
-};
-
-const normalizeRuleThresholds = (
-  value: unknown,
-  severity: ValidationSeverity,
-): VisionValidationRule['thresholds'] => {
-  const defaults = getDefaultThresholds(severity);
-  if (!value || typeof value !== 'object') return defaults;
-  return {
-    passMin: normalizeScore((value as any).passMin) ?? defaults.passMin,
-    failMax: normalizeScore((value as any).failMax) ?? defaults.failMax,
-    reviewBelow:
-      normalizeScore((value as any).reviewBelow) ?? defaults.reviewBelow,
-  };
-};
-
 const normalizeVisionValidationRules = (rules: unknown): VisionValidationRule[] => {
   if (!Array.isArray(rules)) return [];
   return rules
@@ -324,6 +296,7 @@ const normalizeVisionValidationRules = (rules: unknown): VisionValidationRule[] 
       const name = normalizeString(rule.name);
       const severity = normalizeSeverity(rule.severity);
       const viewConstraint = normalizeViewConstraint(rule.viewConstraint);
+      const strictnessPercent = normalizePercentNumber(rule.strictnessPercent);
       const highlight =
         rule.highlight && typeof rule.highlight === 'object'
           ? {
@@ -353,6 +326,13 @@ const normalizeVisionValidationRules = (rules: unknown): VisionValidationRule[] 
         severity,
         checkType: normalizeCheckType(rule.checkType),
         passCriteria: normalizeString(rule.passCriteria),
+        strictnessPercent:
+          strictnessPercent ??
+          (rule?.thresholds &&
+          typeof rule.thresholds === 'object' &&
+          Number.isFinite(Number(rule.thresholds.passMin))
+            ? clampPercent(((Number(rule.thresholds.passMin) - 0.72) / 0.24) * 100)
+            : getDefaultStrictnessPercent(severity)),
         color: normalizeString(rule.color) || '#3b82f6',
         highlight: normalizedHighlight,
         paths: paths.length > 0 ? paths : roi,
@@ -372,8 +352,6 @@ const normalizeVisionValidationRules = (rules: unknown): VisionValidationRule[] 
               .filter(Boolean)
           : [],
         viewConstraint,
-        thresholds: normalizeRuleThresholds(rule.thresholds, severity),
-        allowances: normalizeAllowances(rule.allowances),
         humanReviewRequiredWhen:
           normalizeStringArray(rule.humanReviewRequiredWhen).length > 0
             ? normalizeStringArray(rule.humanReviewRequiredWhen)
@@ -864,9 +842,18 @@ export class CvqaService {
         severity: rule.severity,
         checkType: rule.checkType,
         passCriteria: rule.passCriteria || null,
+        strictnessPercent: rule.strictnessPercent,
+        toleranceGuidance:
+          rule.strictnessPercent >= 90
+            ? 'Muy estricta: no permitas cambios pequeños.'
+            : rule.strictnessPercent >= 75
+              ? 'Estricta: tolerancia baja.'
+              : rule.strictnessPercent >= 55
+                ? 'Balanceada: permite variaciones menores.'
+                : rule.strictnessPercent >= 35
+                  ? 'Flexible: acepta pequeñas diferencias visuales.'
+                  : 'Muy flexible: acepta variaciones visibles si la regla sigue cumpliéndose.',
         viewConstraint: rule.viewConstraint,
-        thresholds: rule.thresholds,
-        allowances: rule.allowances ?? null,
         humanReviewRequiredWhen: rule.humanReviewRequiredWhen,
         regionSummary: formatRuleRegionSummary(rule),
         negativeReferenceFileNames: (rule.negativeReferences || [])
@@ -914,6 +901,7 @@ INSTRUCCIONES DE DECISIÓN:
 - Si el tornillo, cabeza, borde, gap o plano sobresale cuando la regla pide flushness/al ras, es FAIL.
 - Cuando la regla incluya ROI o zona marcada, limita el análisis a esa zona antes de evaluar el resto.
 - Para color_mark, permite pequeñas variaciones por iluminación, pero no apruebes si la marca no existe o el color es claramente incorrecto.
+- Respeta strictnessPercent: 100% significa que no debes tolerar cambios pequeños; 0% significa que puedes tolerar pequeñas variaciones visuales mientras la regla siga cumpliéndose.
 
 SALIDA OBLIGATORIA:
 - Devuelve solo JSON válido con el esquema solicitado.
@@ -1034,7 +1022,11 @@ ${rulesJson}
         status,
         confidence:
           normalizeScore(raw?.confidence) ??
-          (status === 'PASS' ? rule.thresholds.passMin : status === 'FAIL' ? 1 : null),
+          (status === 'PASS'
+            ? deriveThresholdsFromStrictness(rule.strictnessPercent).passMin
+            : status === 'FAIL'
+              ? 1
+              : null),
         reason:
           normalizeString(raw?.reason) ||
           (status === 'REVIEW'
