@@ -1017,8 +1017,8 @@ export class CvqaService {
         if (exposureScore < 0.2) {
           issues.push(`La foto ${index + 1} tiene iluminación deficiente.`);
         }
-        if (framingScore < 0.55) {
-          issues.push(`La foto ${index + 1} tiene encuadre o resolución insuficiente.`);
+        if (framingScore < 0.3) {
+          issues.push(`La foto ${index + 1} tiene resolución insuficiente.`);
         }
       } catch (error) {
         issues.push(`No se pudo analizar la calidad de la foto ${index + 1}.`);
@@ -1030,7 +1030,7 @@ export class CvqaService {
     const framing = averageScores(framingScores);
     const status =
       issues.length > 0 &&
-      (blur == null || blur < 0.28 || exposure == null || exposure < 0.2 || framing == null || framing < 0.55)
+      (blur == null || blur < 0.28 || exposure == null || exposure < 0.2 || framing == null || framing < 0.3)
         ? 'REVIEW'
         : 'PASS';
 
@@ -1411,16 +1411,23 @@ ${rulesJson}
           })),
         );
       if (regions.length === 0) continue;
+      
+      // Enviamos directamente el buffer original (optimizado o reescalado de ser necesario).
+      // El frontend dibuja los vectores dinámicamente encima sin ensuciar la imagen estática.
       try {
-        const annotatedBuffer = await createAnnotatedBuffer(file.buffer, regions);
-        if (!annotatedBuffer) continue;
+        const metadata = await sharp(file.buffer).metadata();
+        let base64Buffer = file.buffer;
+        const formatString = String(metadata.format || '').toLowerCase();
+        if (formatString === 'heic' || formatString === 'heif') {
+           base64Buffer = await sharp(file.buffer).jpeg({ quality: 90 }).toBuffer();
+        }
         images.push({
-          url: `data:image/jpeg;base64,${annotatedBuffer.toString('base64')}`,
+          url: `data:image/jpeg;base64,${base64Buffer.toString('base64')}`,
           label: `Evidencia ${sourceIndex + 1}`,
           sourceIndex,
         });
       } catch (error) {
-        console.warn('[CVQA] Failed to annotate evidence image', error);
+        console.warn('[CVQA] Failed to prep evidence image', error);
       }
     }
     return images;
