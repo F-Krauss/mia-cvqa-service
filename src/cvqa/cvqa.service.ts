@@ -1116,7 +1116,7 @@ INSTRUCCIONES DE DECISIÓN:
 - Si una regla crítica falla claramente, el overallStatus debe ser FAIL.
 - Si la imagen es ambigua, borrosa, con mala iluminación, o la vista no permite comprobar la regla, usa REVIEW.
 - Nunca conviertas automáticamente un FAIL en PASS.
-- Si el tornillo, cabeza, borde, gap o plano sobresale cuando la regla pide flushness/al ras, es FAIL.
+- IMPORTANTE SOBRE FALLAS DE SUPERFICIE: Si una regla requiere que algo esté "al ras" o no sobresalga (flush) como un tornillo o perno, examina el volumen, la sombra y el relieve con extrema severidad. Si sobresale visiblemente o no está perfectamente introducido en la base, el estado es FAIL de inmediato, no importan otras condiciones (ej. tener el marcador correcto no hace que apruebe si el tornillo sobresale).
 - Cuando la regla incluya ROI o zona marcada, esa zona es el ancla semántica obligatoria de la regla.
 - Para cada regla, primero mapea la zona funcional completa en la foto del operador y devuélvela como matchedRuleRegion. PREFIERE CAJAS DELIMITADORAS (rectángulos). Usa los campos \`x, y\` (esquina superior-izquierda) y \`w, h\` (ancho y alto relativos) para envolver el objeto clave (ej. el tornillo completo) de la manera más perfecta, justa y ajustada posible. Abstente de usar el array de "polygon" porque suele producir formas inexactas, a menos que el contorno sea extremadamente irregular.
 - matchedRuleRegion no puede ser solo un parche pequeño de defecto; debe cubrir la zona completa equivalente a la regla.
