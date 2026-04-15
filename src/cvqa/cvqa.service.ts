@@ -49,15 +49,6 @@ type PercentRegion = {
   label?: string;
 };
 
-type RuleSemanticTarget = {
-  objectName?: string;
-  objectClass?: string;
-  attributeFocus?: string;
-  equivalenceHint?: string;
-  expectedSignals: string[];
-  failureSignals: string[];
-};
-
 type VisionValidationRule = {
   id: string;
   name?: string;
@@ -76,7 +67,6 @@ type VisionValidationRule = {
     url?: string;
     mimeType?: string;
   }>;
-  semanticTarget?: RuleSemanticTarget;
   viewConstraint: ValidationViewConstraint;
   humanReviewRequiredWhen: string[];
 };
@@ -190,7 +180,7 @@ const CHECK_TYPE_PLAYBOOK: Record<ValidationCheckType, string> = {
   alignment:
     'Compara ejes, paralelismo y centrado relativo respecto de bordes o referencias geometricas cercanas.',
   flushness:
-    'Evalua el nivel relativo entre dos superficies: FAIL si hay relieve visible, hundimiento visible o discontinuidad de plano no permitida.',
+    'Evalua el nivel relativo entre dos superficies: FAIL si hay relieve visible, hundimiento visible, sombras proyectadas que indiquen diferencia de altura, o si el elemento no esta perfectamente al ras.',
   count:
     'Cuenta instancias del objetivo definido y compara contra la cantidad esperada; faltantes, excedentes o duplicados relevantes implican FAIL.',
   color_mark:
@@ -212,6 +202,30 @@ const STATUS_COLOR_MAP: Record<ValidationStatus, string> = {
 };
 const MIN_RULE_ZONE_COVERAGE_RATIO = 0.3;
 const MIN_RULE_ZONE_AREA_RATIO = 0.2;
+const NEGATIVE_REFERENCE_REVIEW_SIMILARITY = 0.92;
+
+const CHECK_TYPE_KEYWORDS: Record<ValidationCheckType, RegExp> = {
+  presence:
+    /\b(presencia|presente|existe|existir|instalad|colocad|montad|visible|incluido)\b/i,
+  absence:
+    /\b(ausencia|ausente|faltante|falta|sin\b|no\s+(debe\s+)?(exist|haber|estar))\b/i,
+  alignment:
+    /\b(aline|alineacion|centrad|paralel|coax|desviad)\b/i,
+  flushness:
+    /\b(al\s*ras|flush|sobresal|sobresale|hundid|hundido|enras|nivel\s+relativ|plano)\b/i,
+  count:
+    /\b(conteo|cantidad|numero|numeros|piezas|unidades|total\s+de|\d+)\b/i,
+  color_mark:
+    /\b(color|marca|plumon|tinta|rojo|azul|verde|amarill|sello|trazo)\b/i,
+  orientation:
+    /\b(orientacion|sentido|direccion|giro|rotacion|horizontal|vertical|inclinacion)\b/i,
+  surface_condition:
+    /\b(superficie|ray|grieta|rebaba|golpe|aboll|fisura|acabado|oxid|dano|defecto)\b/i,
+  text_match:
+    /\b(texto|codigo|serial|leyenda|qr|barcode|etiqueta\s+de\s+texto)\b/i,
+  gap:
+    /\b(separacion|holgura|gap|espacio|distancia|claro|luz\s+entre)\b/i,
+};
 
 const getDefaultStrictnessPercent = (severity: ValidationSeverity) => {
   switch (severity) {
@@ -239,6 +253,143 @@ const parseCsvList = (value: string | undefined, fallback: string[]) => {
     .map((entry) => entry.trim())
     .filter(Boolean);
   return entries.length > 0 ? entries : fallback;
+};
+
+const computeDifferenceHash = async (buffer: Buffer) => {
+  const raw = await sharp(buffer)
+    .grayscale()
+    .resize(9, 8, { fit: 'fill' })
+    .raw()
+    .toBuffer();
+  let hash = '';
+  for (let row = 0; row < 8; row += 1) {
+    const offset = row * 9;
+    for (let col = 0; col < 8; col += 1) {
+      hash += raw[offset + col] > raw[offset + col + 1] ? '1' : '0';
+    }
+  }
+  return hash;
+};
+
+const computeHammingDistance = (left: string, right: string) => {
+  const limit = Math.min(left.length, right.length);
+  let distance = 0;
+  for (let index = 0; index < limit; index += 1) {
+    if (left[index] !== right[index]) distance += 1;
+  }
+  return distance + Math.abs(left.length - right.length);
+};
+
+const getSimilarityFromHashes = (left: string, right: string) => {
+  const maxLen = Math.max(left.length, right.length, 1);
+  const distance = computeHammingDistance(left, right);
+  return clampScore(1 - distance / maxLen);
+};
+
+const mergeBounds = (
+  items: Array<{ x: number; y: number; w: number; h: number }>,
+) => {
+  if (items.length === 0) return null;
+  const minX = Math.min(...items.map((item) => item.x));
+  const minY = Math.min(...items.map((item) => item.y));
+  const maxX = Math.max(...items.map((item) => item.x + item.w));
+  const maxY = Math.max(...items.map((item) => item.y + item.h));
+  return {
+    x: clampPercent(minX),
+    y: clampPercent(minY),
+    w: clampPercent(Math.max(1, maxX - minX)),
+    h: clampPercent(Math.max(1, maxY - minY)),
+  };
+};
+
+const expandBounds = (
+  bounds: { x: number; y: number; w: number; h: number },
+  marginRatio: number,
+  minSpan: number,
+) => {
+  const growW = bounds.w * marginRatio;
+  const growH = bounds.h * marginRatio;
+  const nextX = clampPercent(bounds.x - growW);
+  const nextY = clampPercent(bounds.y - growH);
+  const nextW = Math.max(minSpan, Math.min(100 - nextX, bounds.w + growW * 2));
+  const nextH = Math.max(minSpan, Math.min(100 - nextY, bounds.h + growH * 2));
+  return {
+    x: nextX,
+    y: nextY,
+    w: clampPercent(nextW),
+    h: clampPercent(nextH),
+  };
+};
+
+const areBoundsRelated = (
+  left: { x: number; y: number; w: number; h: number },
+  right: { x: number; y: number; w: number; h: number },
+) => {
+  const overlapW = Math.max(
+    0,
+    Math.min(left.x + left.w, right.x + right.w) -
+      Math.max(left.x, right.x),
+  );
+  const overlapH = Math.max(
+    0,
+    Math.min(left.y + left.h, right.y + right.h) -
+      Math.max(left.y, right.y),
+  );
+  if (overlapW * overlapH > 0) return true;
+
+  const leftCx = left.x + left.w / 2;
+  const leftCy = left.y + left.h / 2;
+  const rightCx = right.x + right.w / 2;
+  const rightCy = right.y + right.h / 2;
+  const distance = Math.hypot(leftCx - rightCx, leftCy - rightCy);
+  const threshold = Math.max(left.w, left.h, right.w, right.h) * 1.2;
+  return distance <= threshold;
+};
+
+const requiresWideCoverage = (rule: VisionValidationRule) => {
+  const text = normalizeTextForChecks(
+    `${rule.name || ''} ${rule.description || ''} ${rule.passCriteria || ''}`,
+  );
+  if (rule.checkType === 'color_mark' || rule.checkType === 'text_match') {
+    return true;
+  }
+  return /\b(color|marca|trazo|texto|serial|etiqueta|sello|plumon)\b/.test(text);
+};
+
+const adjustMatchedRuleRegion = (
+  rule: VisionValidationRule,
+  matchedRuleRegion?: PercentRegion | null,
+  defectRegion?: PercentRegion | null,
+  evidenceRegions: PercentRegion[] = [],
+): PercentRegion | null => {
+  const matchedBounds = getPercentRegionBounds(matchedRuleRegion || undefined);
+  if (!matchedBounds || !matchedRuleRegion) return matchedRuleRegion || null;
+
+  const relatedBounds = [matchedBounds];
+  for (const candidate of [defectRegion, ...evidenceRegions]) {
+    const candidateBounds = getPercentRegionBounds(candidate || undefined);
+    if (!candidateBounds) continue;
+    if (areBoundsRelated(matchedBounds, candidateBounds)) {
+      relatedBounds.push(candidateBounds);
+    }
+  }
+
+  const merged = mergeBounds(relatedBounds);
+  if (!merged) return matchedRuleRegion;
+  const expanded = expandBounds(
+    merged,
+    requiresWideCoverage(rule) ? 0.22 : 0.14,
+    requiresWideCoverage(rule) ? 12 : 8,
+  );
+
+  return {
+    ...matchedRuleRegion,
+    x: expanded.x,
+    y: expanded.y,
+    w: expanded.w,
+    h: expanded.h,
+    polygon: [],
+  };
 };
 
 const buildModelIdChain = () => {
@@ -285,53 +436,12 @@ const normalizeStringArray = (value: unknown): string[] =>
     ? value.map((entry) => String(entry || '').trim()).filter(Boolean)
     : [];
 
-const normalizeRuleSemanticTarget = (
-  value: unknown,
-  fallback: {
-    name?: string;
-    description?: string;
-    checkType?: ValidationCheckType;
-    passCriteria?: string;
-  },
-): RuleSemanticTarget | undefined => {
-  const raw = value && typeof value === 'object' ? (value as any) : {};
-  const objectName =
-    normalizeString(raw.objectName) ||
-    normalizeString(fallback.name) ||
-    normalizeString(fallback.description);
-  const objectClass = normalizeString(raw.objectClass);
-  const attributeFocus =
-    normalizeString(raw.attributeFocus) ||
-    (fallback.checkType ? CHECK_TYPE_LABELS[fallback.checkType] : undefined);
-  const equivalenceHint = normalizeString(raw.equivalenceHint);
-  const expectedSignals = normalizeStringArray(raw.expectedSignals).slice(0, 8);
-  const failureSignals = normalizeStringArray(raw.failureSignals).slice(0, 8);
-
-  if (expectedSignals.length === 0) {
-    const passCriteria = normalizeString(fallback.passCriteria);
-    if (passCriteria) expectedSignals.push(passCriteria);
-  }
-
-  if (
-    !objectName &&
-    !objectClass &&
-    !attributeFocus &&
-    !equivalenceHint &&
-    expectedSignals.length === 0 &&
-    failureSignals.length === 0
-  ) {
-    return undefined;
-  }
-
-  return {
-    objectName,
-    objectClass,
-    attributeFocus,
-    equivalenceHint,
-    expectedSignals,
-    failureSignals,
-  };
-};
+const normalizeTextForChecks = (value: string) =>
+  String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
 
 const normalizeFileName = (value: string | undefined) =>
   String(value || '')
@@ -399,12 +509,6 @@ const normalizeVisionValidationRules = (rules: unknown): VisionValidationRule[] 
       const passCriteria = normalizeString(rule.passCriteria);
       const viewConstraint = normalizeViewConstraint(rule.viewConstraint);
       const strictnessPercent = normalizePercentNumber(rule.strictnessPercent);
-      const semanticTarget = normalizeRuleSemanticTarget(rule.semanticTarget, {
-        name,
-        description,
-        checkType,
-        passCriteria,
-      });
       const highlight =
         rule.highlight && typeof rule.highlight === 'object'
           ? {
@@ -459,7 +563,6 @@ const normalizeVisionValidationRules = (rules: unknown): VisionValidationRule[] 
               )
               .filter(Boolean)
           : [],
-        semanticTarget,
         viewConstraint,
         humanReviewRequiredWhen:
           normalizeStringArray(rule.humanReviewRequiredWhen).length > 0
@@ -853,7 +956,7 @@ const ensureEvidenceRegions = (
   }));
 
   const evidenceRegions: PercentRegion[] = [];
-  const primaryRegion = defectRegion || matchedRuleRegion || legacyRegions[0];
+  const primaryRegion = matchedRuleRegion || defectRegion || legacyRegions[0];
 
   if (primaryRegion) {
     evidenceRegions.push(primaryRegion);
@@ -1162,21 +1265,6 @@ export class CvqaService {
       .join('\n');
   }
 
-  private buildRuleSemanticTarget(rule: VisionValidationRule) {
-    const semantic = rule.semanticTarget;
-    return {
-      objectName: semantic?.objectName || rule.name || rule.description,
-      objectClass: semantic?.objectClass || 'objeto',
-      attributeFocus:
-        semantic?.attributeFocus || CHECK_TYPE_LABELS[rule.checkType],
-      equivalenceHint:
-        semantic?.equivalenceHint ||
-        'Ubica el equivalente funcional aunque cambien angulo, escala, encuadre o iluminacion.',
-      expectedSignals: semantic?.expectedSignals || [],
-      failureSignals: semantic?.failureSignals || [],
-    };
-  }
-
   private buildRulePromptSummary(rules: VisionValidationRule[]) {
     return JSON.stringify(
       rules.map((rule) => ({
@@ -1200,7 +1288,6 @@ export class CvqaService {
         checkTypeGuidance: CHECK_TYPE_PLAYBOOK[rule.checkType],
         viewConstraint: rule.viewConstraint,
         humanReviewRequiredWhen: rule.humanReviewRequiredWhen,
-        semanticTarget: this.buildRuleSemanticTarget(rule),
         ruleZoneAnchor: getRuleAnchorRegion(rule),
         regionSummary: formatRuleRegionSummary(rule),
         negativeReferenceFileNames: (rule.negativeReferences || [])
@@ -1210,6 +1297,81 @@ export class CvqaService {
       null,
       2,
     );
+  }
+
+  private detectRuleSignalTypes(text: string): ValidationCheckType[] {
+    return VALID_CHECK_TYPES.filter((checkType) =>
+      CHECK_TYPE_KEYWORDS[checkType].test(text),
+    );
+  }
+
+  private getDeterministicRuleIssues(rules: VisionValidationRule[]): string[] {
+    const issues: string[] = [];
+
+    for (const rule of rules) {
+      const ruleLabel = rule.name || rule.description || rule.id;
+      const text = normalizeTextForChecks(
+        `${rule.name || ''} ${rule.description || ''} ${rule.passCriteria || ''}`,
+      );
+      const signals = this.detectRuleSignalTypes(text);
+      const specificSignals = signals.filter(
+        (checkType) => checkType !== 'presence' && checkType !== 'absence',
+      );
+
+      if (rule.checkType === 'presence' && specificSignals.length > 0) {
+        issues.push(
+          `La regla "${ruleLabel}" usa checkType "presence" pero su criterio sugiere ${specificSignals
+            .map((checkType) => CHECK_TYPE_LABELS[checkType])
+            .join(', ')}. Ajusta el tipo de chequeo.`,
+        );
+      }
+
+      if (
+        rule.checkType === 'absence' &&
+        signals.includes('presence') &&
+        !signals.includes('absence')
+      ) {
+        issues.push(
+          `La regla "${ruleLabel}" usa "absence" pero el texto describe presencia/instalacion del elemento.`,
+        );
+      }
+
+      if (
+        rule.checkType !== 'presence' &&
+        rule.checkType !== 'absence' &&
+        !CHECK_TYPE_KEYWORDS[rule.checkType].test(text)
+      ) {
+        issues.push(
+          `La regla "${ruleLabel}" no contiene señales claras del tipo de chequeo seleccionado (${CHECK_TYPE_LABELS[rule.checkType]}).`,
+        );
+      }
+
+      if (
+        rule.checkType !== 'presence' &&
+        rule.checkType !== 'absence' &&
+        signals.length > 0 &&
+        !signals.includes(rule.checkType)
+      ) {
+        issues.push(
+          `La regla "${ruleLabel}" parece describir ${signals
+            .map((checkType) => CHECK_TYPE_LABELS[checkType])
+            .join(', ')} pero está configurada como ${CHECK_TYPE_LABELS[rule.checkType]}.`,
+        );
+      }
+
+      if (
+        rule.viewConstraint === 'any' &&
+        /\b(multi|dos\s+vistas|varias\s+vistas|frontal\s+y\s+lateral|ambos\s+lados)\b/.test(
+          text,
+        )
+      ) {
+        issues.push(
+          `La regla "${ruleLabel}" sugiere múltiples vistas pero está configurada como "any".`,
+        );
+      }
+    }
+
+    return [...new Set(issues)].slice(0, 6);
   }
 
   private buildLocalizationPrompt(params: any, rules: VisionValidationRule[]) {
@@ -1231,8 +1393,8 @@ OBJETIVO DE ESTA ETAPA:
 REGLAS DE LOCALIZACION:
 - Las fotos de inspeccion pueden tener perspectiva, escala, encuadre e iluminacion diferentes a la referencia.
 - No copies coordenadas del golden sample; encuentra el equivalente funcional en la foto evaluada.
-- Usa contexto de semanticTarget, descripcion, passCriteria, ROI y referencias negativas para localizar con precision.
-- Devuelve matchedRuleRegion en porcentajes 0..100 de la foto evaluada.
+- Usa descripcion, passCriteria, checkType, ROI y referencias negativas para localizar con precision.
+- Devuelve matchedRuleRegion en porcentajes 0..100 de la foto evaluada. El matchedRuleRegion DEBE abarcar COMPLETAMENTE el objeto o conjunto de elementos descritos en la regla, no solo una parte.
 - Prefiere cajas (x,y,w,h) ajustadas. Usa polygon solo si el contorno es irregular.
 
 PLAYBOOK GLOBAL POR TIPO DE CHEQUEO:
@@ -1291,7 +1453,7 @@ INSTRUCCIONES DE DECISIÓN:
  - IMPORTANTE SOBRE POSICIÓN Y PERSPECTIVA: Las fotos a inspeccionar pueden tener ángulos, escala o perspectivas diferentes a las referencias. No copies coordenadas de la referencia; localiza el equivalente funcional real en cada foto nueva.
  - IMPORTANTE SOBRE COORDENADAS: Todas las coordenadas (x, y, w, h) y puntos de "polygon" deben estar en porcentaje 0..100 relativos a la foto evaluada. (0,0)=esquina superior izquierda y (100,100)=esquina inferior derecha.
  - FLUJO OBLIGATORIO EN 2 ETAPAS POR REGLA:
-   1) LOCALIZAR: identifica el objeto/rasgo objetivo de la regla en la foto del operador y devuelve matchedRuleRegion con la zona completa equivalente.
+   1) LOCALIZAR: identifica el objeto/rasgo objetivo de la regla en la foto del operador y devuelve matchedRuleRegion con la zona completa equivalente. IMPORTANTE: asegúrate de que el matchedRuleRegion envuelva COMPLETAMENTE a TODOS los elementos descritos en la regla; no dejes porciones fuera.
    2) EVALUAR: sobre esa zona localizada, determina PASS/FAIL/REVIEW según checkType, strictnessPercent, passCriteria y señales visuales observadas.
  - Evalúa cada regla por separado.
  - Usa la mejor foto del operador para cada regla según viewConstraint.
@@ -1334,16 +1496,20 @@ ${rulesJson}
     negativeReferenceFiles: Express.Multer.File[],
   ) {
     const filesByName = new Map<string, Express.Multer.File[]>();
+    const allFiles: Array<{ file: Express.Multer.File; fingerprint: string }> = [];
     for (const file of negativeReferenceFiles) {
       const key = normalizeFileName(file.originalname);
       if (!key) continue;
       const bucket = filesByName.get(key) || [];
       bucket.push(file);
       filesByName.set(key, bucket);
+      allFiles.push({ file, fingerprint: fingerprintBuffer(file.buffer) });
     }
 
+    const usedFingerprints = new Set<string>();
+
     return rules.map((rule) => {
-      const matchedFiles =
+      const byNameMatches =
         (rule.negativeReferences || [])
           .flatMap((reference) =>
             reference.fileName
@@ -1351,7 +1517,31 @@ ${rulesJson}
               : [],
           )
           .filter(Boolean) || [];
-      return { rule, files: matchedFiles };
+
+      const uniqueByNameMatches: Express.Multer.File[] = [];
+      const seenByName = new Set<string>();
+      for (const file of byNameMatches) {
+        const key = fingerprintBuffer(file.buffer);
+        if (seenByName.has(key)) continue;
+        seenByName.add(key);
+        usedFingerprints.add(key);
+        uniqueByNameMatches.push(file);
+      }
+
+      const requestedCount = Math.max(0, (rule.negativeReferences || []).length);
+      const targetCount = requestedCount > 0 ? requestedCount : uniqueByNameMatches.length;
+      if (uniqueByNameMatches.length < targetCount) {
+        const remaining = allFiles.filter(
+          ({ fingerprint }) => !usedFingerprints.has(fingerprint),
+        );
+        for (const entry of remaining) {
+          if (uniqueByNameMatches.length >= targetCount) break;
+          uniqueByNameMatches.push(entry.file);
+          usedFingerprints.add(entry.fingerprint);
+        }
+      }
+
+      return { rule, files: uniqueByNameMatches };
     });
   }
 
@@ -1408,6 +1598,13 @@ ${rulesJson}
         normalizePercentRegion(raw?.defectRegion) ||
         normalizePercentRegion(raw?.nonComplianceRegion) ||
         null;
+
+      matchedRuleRegion = adjustMatchedRuleRegion(
+        rule,
+        matchedRuleRegion,
+        defectRegion,
+        rawEvidenceRegions,
+      );
 
       const reasonNotes: string[] = [];
       let forceReview = false;
@@ -1608,6 +1805,74 @@ ${rulesJson}
       }
     }
     return images;
+  }
+
+  private async applyNegativeReferenceSimilarityGuard(
+    ruleResults: RuleEvaluation[],
+    objectFiles: Express.Multer.File[],
+    negativeReferenceMap: Array<{
+      rule: VisionValidationRule;
+      files: Express.Multer.File[];
+    }>,
+  ): Promise<RuleEvaluation[]> {
+    if (!ruleResults.length || !objectFiles.length || !negativeReferenceMap.length) {
+      return ruleResults;
+    }
+
+    const negativeByRuleId = new Map<string, Express.Multer.File[]>();
+    for (const entry of negativeReferenceMap) {
+      if (!entry.files?.length) continue;
+      negativeByRuleId.set(entry.rule.id, entry.files);
+    }
+
+    const hashCache = new Map<string, Promise<string>>();
+    const getHash = (file: Express.Multer.File) => {
+      const key = fingerprintBuffer(file.buffer);
+      const existing = hashCache.get(key);
+      if (existing) return existing;
+      const next = computeDifferenceHash(file.buffer);
+      hashCache.set(key, next);
+      return next;
+    };
+
+    const nextResults: RuleEvaluation[] = [];
+    for (const result of ruleResults) {
+      const negatives = negativeByRuleId.get(result.ruleId) || [];
+      if (!negatives.length) {
+        nextResults.push(result);
+        continue;
+      }
+
+      const indices =
+        result.sourceIndices.length > 0 ? result.sourceIndices : objectFiles.length > 0 ? [0] : [];
+      let maxSimilarity = 0;
+      for (const index of indices) {
+        const objectFile = objectFiles[index];
+        if (!objectFile) continue;
+        const objectHash = await getHash(objectFile);
+        for (const negativeFile of negatives) {
+          const negativeHash = await getHash(negativeFile);
+          const similarity = getSimilarityFromHashes(objectHash, negativeHash);
+          if (similarity > maxSimilarity) maxSimilarity = similarity;
+        }
+      }
+
+      if (maxSimilarity < NEGATIVE_REFERENCE_REVIEW_SIMILARITY) {
+        nextResults.push(result);
+        continue;
+      }
+
+      const note =
+        `Coincidencia alta con referencia negativa (${Math.round(maxSimilarity * 100)}%). Requiere revisión humana.`;
+      nextResults.push({
+        ...result,
+        status: result.status === 'FAIL' ? 'FAIL' : 'REVIEW',
+        confidence: result.status === 'FAIL' ? result.confidence : null,
+        reason: [result.reason, note].filter(Boolean).join(' · '),
+      });
+    }
+
+    return nextResults;
   }
 
   async compareVisionQuality(
@@ -2085,10 +2350,15 @@ ${rulesJson}
         };
       });
 
-      const ruleResults = this.normalizeModelRuleResults(
+      const normalizedRuleResults = this.normalizeModelRuleResults(
         mergedRawRuleResults,
         rules,
         objectFiles.length,
+      );
+      const ruleResults = await this.applyNegativeReferenceSimilarityGuard(
+        normalizedRuleResults,
+        objectFiles,
+        negativeReferenceMap,
       );
       const overallStatus = this.computeOverallStatus(
         rules,
@@ -2169,6 +2439,14 @@ ${rulesJson}
         };
       }
 
+      const deterministicIssues = this.getDeterministicRuleIssues(rules);
+      if (deterministicIssues.length > 0) {
+        return {
+          status: 'invalid',
+          message: deterministicIssues.join(' | '),
+        };
+      }
+
       const subjectLabel =
         typeof payload?.subjectLabel === 'string' && payload.subjectLabel.trim()
           ? payload.subjectLabel.trim()
@@ -2189,7 +2467,6 @@ Verifica si existe alguno de estos problemas:
 3. Reglas que deberían ser multiángulo pero están marcadas como una sola vista.
 4. Zonas marcadas incoherentes con la regla: apuntan al lugar equivocado, están vacías, demasiado amplias o demasiado pequeñas.
 5. La foto base no es suficiente para validar esas reglas por ángulo, resolución, iluminación o encuadre.
-6. Reglas sin objetivo semántico claro (qué objeto localizar y qué atributo validar) que impedirían una evaluación robusta en productos distintos.
 
 Para cada regla, revisa que:
 - El checkType esté alineado con el criterio escrito.
