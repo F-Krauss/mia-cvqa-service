@@ -220,11 +220,24 @@ const CHECK_TYPE_KEYWORDS: Record<ValidationCheckType, RegExp> = {
   orientation:
     /\b(orientacion|sentido|direccion|giro|rotacion|horizontal|vertical|inclinacion)\b/i,
   surface_condition:
-    /\b(superficie|ray|grieta|rebaba|golpe|aboll|fisura|acabado|oxid|dano|defecto)\b/i,
+    /\b(superficie|ray|grieta|rebaba|golpe|aboll|fisura|acabado|oxid|dano|defecto|al\s*ras|flush|sobresal|sobresale|hundid|hundido|enras|elevaci|desnivel)\b/i,
   text_match:
     /\b(texto|codigo|serial|leyenda|qr|barcode|etiqueta\s+de\s+texto)\b/i,
   gap:
     /\b(separacion|holgura|gap|espacio|distancia|claro|luz\s+entre)\b/i,
+};
+
+const CHECK_TYPE_SCOPE_EQUIVALENCE: Record<ValidationCheckType, ValidationCheckType[]> = {
+  presence: ['presence', 'color_mark'],
+  absence: ['absence'],
+  alignment: ['alignment'],
+  flushness: ['flushness', 'surface_condition'],
+  count: ['count'],
+  color_mark: ['color_mark', 'presence'],
+  orientation: ['orientation'],
+  surface_condition: ['surface_condition', 'flushness'],
+  text_match: ['text_match'],
+  gap: ['gap'],
 };
 
 const CHECK_TYPE_FUNCTIONAL_GUIDANCE: Record<ValidationCheckType, string> = {
@@ -1396,6 +1409,33 @@ export class CvqaService {
       .join(' ');
   }
 
+  private isRuleDescriptionAlignedWithCheckType(
+    rule: VisionValidationRule,
+    descriptionText: string,
+    signals: ValidationCheckType[],
+  ) {
+    const expectedScopeTypes =
+      CHECK_TYPE_SCOPE_EQUIVALENCE[rule.checkType] || [rule.checkType];
+
+    if (
+      expectedScopeTypes.some((scopeType) =>
+        CHECK_TYPE_KEYWORDS[scopeType].test(descriptionText),
+      )
+    ) {
+      return true;
+    }
+
+    const signalScopeTypes = new Set<ValidationCheckType>();
+    for (const signal of signals) {
+      const equivalents = CHECK_TYPE_SCOPE_EQUIVALENCE[signal] || [signal];
+      for (const equivalent of equivalents) {
+        signalScopeTypes.add(equivalent);
+      }
+    }
+
+    return expectedScopeTypes.some((scopeType) => signalScopeTypes.has(scopeType));
+  }
+
   private getDeterministicRuleIssues(rules: VisionValidationRule[]): string[] {
     const issues: string[] = [];
 
@@ -1417,11 +1457,15 @@ export class CvqaService {
       if (
         rule.checkType !== 'presence' &&
         rule.checkType !== 'absence' &&
-        !CHECK_TYPE_KEYWORDS[rule.checkType].test(descriptionText)
+        !this.isRuleDescriptionAlignedWithCheckType(
+          rule,
+          descriptionText,
+          signals,
+        )
       ) {
         const authoringCheckType = this.toAuthoringCheckType(rule.checkType);
         issues.push(
-          `La regla "${ruleLabel}" no contiene en su descripcion señales claras del tipo de chequeo seleccionado (${CHECK_TYPE_LABELS[authoringCheckType]}). Sugerencia funcional: ${this.buildRuleFunctionalSuggestion(rule, signals, 'mismatch')}`,
+          `La regla "${ruleLabel}" no contiene en su descripcion señales claras del alcance esperado para el tipo de chequeo seleccionado (${CHECK_TYPE_LABELS[authoringCheckType]}). Sugerencia funcional: ${this.buildRuleFunctionalSuggestion(rule, signals, 'mismatch')}`,
         );
       }
     }
@@ -2599,6 +2643,8 @@ Verifica si existe alguno de estos problemas:
 
 Para cada regla, revisa que:
 - El checkType esté alineado con el criterio escrito.
+- Evalua por alcance semantico: "Condicion superficial" incluye casos de elevacion/desnivel (al ras, sobresale, hundido).
+- No marques invalid una regla de "Condicion superficial" solo porque use terminos como "al ras", "sobresale" o "hundido"; eso SI es coherente.
 - Exista suficiente contexto para localizar el equivalente del objetivo en nuevas fotos aunque cambie la perspectiva.
 - El criterio de PASS/FAIL sea medible visualmente y no ambiguo.
 - Prioriza inconsistencias de estructura/descripcion de la regla por encima de recomendaciones de cámara.
