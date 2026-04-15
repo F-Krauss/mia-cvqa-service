@@ -1310,21 +1310,8 @@ export class CvqaService {
 
     for (const rule of rules) {
       const ruleLabel = rule.name || rule.description || rule.id;
-      const text = normalizeTextForChecks(
-        `${rule.name || ''} ${rule.description || ''} ${rule.passCriteria || ''}`,
-      );
-      const signals = this.detectRuleSignalTypes(text);
-      const specificSignals = signals.filter(
-        (checkType) => checkType !== 'presence' && checkType !== 'absence',
-      );
-
-      if (rule.checkType === 'presence' && specificSignals.length > 0) {
-        issues.push(
-          `La regla "${ruleLabel}" usa checkType "presence" pero su criterio sugiere ${specificSignals
-            .map((checkType) => CHECK_TYPE_LABELS[checkType])
-            .join(', ')}. Ajusta el tipo de chequeo.`,
-        );
-      }
+      const descriptionText = normalizeTextForChecks(rule.description || '');
+      const signals = this.detectRuleSignalTypes(descriptionText);
 
       if (
         rule.checkType === 'absence' &&
@@ -1339,39 +1326,32 @@ export class CvqaService {
       if (
         rule.checkType !== 'presence' &&
         rule.checkType !== 'absence' &&
-        !CHECK_TYPE_KEYWORDS[rule.checkType].test(text)
+        !CHECK_TYPE_KEYWORDS[rule.checkType].test(descriptionText)
       ) {
         issues.push(
-          `La regla "${ruleLabel}" no contiene señales claras del tipo de chequeo seleccionado (${CHECK_TYPE_LABELS[rule.checkType]}).`,
-        );
-      }
-
-      if (
-        rule.checkType !== 'presence' &&
-        rule.checkType !== 'absence' &&
-        signals.length > 0 &&
-        !signals.includes(rule.checkType)
-      ) {
-        issues.push(
-          `La regla "${ruleLabel}" parece describir ${signals
-            .map((checkType) => CHECK_TYPE_LABELS[checkType])
-            .join(', ')} pero está configurada como ${CHECK_TYPE_LABELS[rule.checkType]}.`,
-        );
-      }
-
-      if (
-        rule.viewConstraint === 'any' &&
-        /\b(multi|dos\s+vistas|varias\s+vistas|frontal\s+y\s+lateral|ambos\s+lados)\b/.test(
-          text,
-        )
-      ) {
-        issues.push(
-          `La regla "${ruleLabel}" sugiere múltiples vistas pero está configurada como "any".`,
+          `La regla "${ruleLabel}" no contiene en su descripcion señales claras del tipo de chequeo seleccionado (${CHECK_TYPE_LABELS[rule.checkType]}).`,
         );
       }
     }
 
     return [...new Set(issues)].slice(0, 6);
+  }
+
+  private shouldTreatRulesValidationAsAdvisory(message?: string) {
+    const normalizedMessage = normalizeTextForChecks(message || '');
+    if (!normalizedMessage) return false;
+
+    const hasAngleOrViewSignals =
+      /\b(angulo|vista|frontal|lateral|superior|perspectiva|multiangulo|multivista|viewconstraint|any)\b/.test(
+        normalizedMessage,
+      );
+    if (!hasAngleOrViewSignals) return false;
+
+    const hasHardInvalidSignals =
+      /\b(contradic|imposibl|ambigu|no\s+observable|incoher|inconsisten|equivocad|vacia|vacio|checktype|tipo\s+de\s+chequeo|descripcion)\b/.test(
+        normalizedMessage,
+      );
+    return !hasHardInvalidSignals;
   }
 
   private buildLocalizationPrompt(params: any, rules: VisionValidationRule[]) {
@@ -2464,14 +2444,16 @@ Contexto:
 Verifica si existe alguno de estos problemas:
 1. Reglas lógicamente imposibles o contradictorias.
 2. Reglas ambiguas o no observables en una foto real.
-3. Reglas que deberían ser multiángulo pero están marcadas como una sola vista.
+3. Reglas con recomendación de multiángulo o vista específica (frontal/lateral/superior) para mejorar robustez.
 4. Zonas marcadas incoherentes con la regla: apuntan al lugar equivocado, están vacías, demasiado amplias o demasiado pequeñas.
-5. La foto base no es suficiente para validar esas reglas por ángulo, resolución, iluminación o encuadre.
+5. La foto base podría no ser ideal por ángulo, resolución, iluminación o encuadre.
 
 Para cada regla, revisa que:
 - El checkType esté alineado con el criterio escrito.
 - Exista suficiente contexto para localizar el equivalente del objetivo en nuevas fotos aunque cambie la perspectiva.
 - El criterio de PASS/FAIL sea medible visualmente y no ambiguo.
+- Prioriza inconsistencias de estructura/descripcion de la regla por encima de recomendaciones de cámara.
+- Si la observación es solo de ángulo o vista, responde status "valid" y deja la recomendación en "message" (no invalides automáticamente).
 
 Reglas estructuradas:
 ${rulesText}
@@ -2549,9 +2531,20 @@ Responde ÚNICAMENTE con JSON en este formato estricto:
         };
       }
 
+      const status = jsonResult?.status === 'valid' ? 'valid' : 'invalid';
+      const message = normalizeString(jsonResult?.message);
+      if (status === 'invalid' && this.shouldTreatRulesValidationAsAdvisory(message)) {
+        return {
+          status: 'valid',
+          message: message
+            ? `Recomendación de encuadre/vista (no bloqueante): ${message}`
+            : 'Recomendación de encuadre/vista (no bloqueante).',
+        };
+      }
+
       return {
-        status: jsonResult?.status === 'valid' ? 'valid' : 'invalid',
-        message: normalizeString(jsonResult?.message),
+        status,
+        message,
       };
     } catch (error: any) {
       console.error(
