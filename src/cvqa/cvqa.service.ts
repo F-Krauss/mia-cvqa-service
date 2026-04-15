@@ -227,6 +227,29 @@ const CHECK_TYPE_KEYWORDS: Record<ValidationCheckType, RegExp> = {
     /\b(separacion|holgura|gap|espacio|distancia|claro|luz\s+entre)\b/i,
 };
 
+const CHECK_TYPE_FUNCTIONAL_GUIDANCE: Record<ValidationCheckType, string> = {
+  presence:
+    'Ejemplo funcional: "Debe estar presente el tornillo en la posicion indicada; FAIL si falta o no es visible".',
+  absence:
+    'Ejemplo funcional: "No debe existir marca adicional fuera de la zona indicada; FAIL si aparece".',
+  alignment:
+    'Ejemplo funcional: "El eje del tornillo debe quedar centrado y paralelo al borde de referencia; FAIL si se observa desviacion".',
+  flushness:
+    'Ejemplo funcional: "La cabeza del tornillo debe quedar al ras (sin elevacion ni hundimiento); FAIL si sobresale o se hunde".',
+  count:
+    'Ejemplo funcional: "Deben observarse exactamente 2 tornillos; FAIL si hay menos o mas".',
+  color_mark:
+    'Ejemplo funcional: "Debe existir una marca azul continua en la zona definida; FAIL si falta o es de otro color".',
+  orientation:
+    'Ejemplo funcional: "La pieza debe orientarse hacia arriba en sentido horario; FAIL si esta invertida".',
+  surface_condition:
+    'Ejemplo funcional: "La cabeza del tornillo debe quedar al ras de la placa (sin elevacion ni hundimiento); FAIL si sobresale o queda hundida".',
+  text_match:
+    'Ejemplo funcional: "La etiqueta debe mostrar el codigo ABC-123 legible; FAIL si no coincide".',
+  gap:
+    'Ejemplo funcional: "La separacion entre borde y tornillo debe ser uniforme y sin luz visible; FAIL si hay holgura evidente".',
+};
+
 const getDefaultStrictnessPercent = (severity: ValidationSeverity) => {
   switch (severity) {
     case 'critical':
@@ -1305,6 +1328,74 @@ export class CvqaService {
     );
   }
 
+  private toAuthoringCheckType(checkType: ValidationCheckType): ValidationCheckType {
+    if (checkType === 'flushness') return 'surface_condition';
+    if (checkType === 'color_mark') return 'presence';
+    return checkType;
+  }
+
+  private pickSuggestedCheckType(
+    rule: VisionValidationRule,
+    signals: ValidationCheckType[],
+  ): ValidationCheckType | null {
+    const currentType = this.toAuthoringCheckType(rule.checkType);
+    const normalizedSignals = [...new Set(signals.map((signal) => this.toAuthoringCheckType(signal)))].filter(
+      (signal) => signal !== currentType,
+    );
+    if (normalizedSignals.length === 0) return null;
+
+    const priority: ValidationCheckType[] = [
+      'surface_condition',
+      'gap',
+      'alignment',
+      'orientation',
+      'count',
+      'presence',
+      'absence',
+      'text_match',
+    ];
+    for (const candidate of priority) {
+      if (normalizedSignals.includes(candidate)) return candidate;
+    }
+    return normalizedSignals[0] || null;
+  }
+
+  private buildRuleFunctionalSuggestion(
+    rule: VisionValidationRule,
+    signals: ValidationCheckType[],
+    issueKind: 'mismatch' | 'absence_conflict',
+  ) {
+    const currentType = this.toAuthoringCheckType(rule.checkType);
+    const suggestedType = this.pickSuggestedCheckType(rule, signals);
+    const hasElevationSignal =
+      signals.includes('flushness') ||
+      /\b(al\s*ras|sobresal|hundid|elevaci|desnivel)\b/.test(
+        normalizeTextForChecks(rule.description || ''),
+      );
+    const elevationHint = hasElevationSignal
+      ? 'Si estas evaluando elevacion/desnivel (al ras, sobresale o hundido), usa "Condicion superficial".'
+      : '';
+
+    if (issueKind === 'absence_conflict') {
+      return [
+        'El texto actual describe presencia. Si quieres comprobar que el elemento exista, usa "Presencia"; si quieres ausencia, redacta explicitamente "no debe estar presente".',
+        CHECK_TYPE_FUNCTIONAL_GUIDANCE[suggestedType || 'presence'],
+      ]
+        .filter(Boolean)
+        .join(' ');
+    }
+
+    const typeHint =
+      suggestedType && suggestedType !== currentType
+        ? `Cambia el tipo de chequeo a "${CHECK_TYPE_LABELS[suggestedType]}" o ajusta la descripcion para que sea coherente con "${CHECK_TYPE_LABELS[currentType]}".`
+        : `Ajusta la descripcion para que sea coherente con "${CHECK_TYPE_LABELS[currentType]}" y medible en una foto.`;
+    const functionalExample =
+      CHECK_TYPE_FUNCTIONAL_GUIDANCE[suggestedType || currentType];
+    return [typeHint, elevationHint, functionalExample]
+      .filter(Boolean)
+      .join(' ');
+  }
+
   private getDeterministicRuleIssues(rules: VisionValidationRule[]): string[] {
     const issues: string[] = [];
 
@@ -1319,7 +1410,7 @@ export class CvqaService {
         !signals.includes('absence')
       ) {
         issues.push(
-          `La regla "${ruleLabel}" usa "absence" pero el texto describe presencia/instalacion del elemento.`,
+          `La regla "${ruleLabel}" usa "absence" pero el texto describe presencia/instalacion del elemento. Sugerencia funcional: ${this.buildRuleFunctionalSuggestion(rule, signals, 'absence_conflict')}`,
         );
       }
 
@@ -1328,8 +1419,9 @@ export class CvqaService {
         rule.checkType !== 'absence' &&
         !CHECK_TYPE_KEYWORDS[rule.checkType].test(descriptionText)
       ) {
+        const authoringCheckType = this.toAuthoringCheckType(rule.checkType);
         issues.push(
-          `La regla "${ruleLabel}" no contiene en su descripcion señales claras del tipo de chequeo seleccionado (${CHECK_TYPE_LABELS[rule.checkType]}).`,
+          `La regla "${ruleLabel}" no contiene en su descripcion señales claras del tipo de chequeo seleccionado (${CHECK_TYPE_LABELS[authoringCheckType]}). Sugerencia funcional: ${this.buildRuleFunctionalSuggestion(rule, signals, 'mismatch')}`,
         );
       }
     }
@@ -1352,6 +1444,63 @@ export class CvqaService {
         normalizedMessage,
       );
     return !hasHardInvalidSignals;
+  }
+
+  private shouldAppendFunctionalSuggestion(message?: string) {
+    const normalizedMessage = normalizeTextForChecks(message || '');
+    if (!normalizedMessage) return true;
+    return !/\b(sugerencia|ejemplo\s+funcional|cambia|ajusta|reescribe|usa|agrega|define)\b/.test(
+      normalizedMessage,
+    );
+  }
+
+  private pickRuleForFunctionalSuggestion(
+    rules: VisionValidationRule[],
+    message?: string,
+  ): VisionValidationRule | null {
+    if (rules.length === 0) return null;
+    const normalizedMessage = normalizeTextForChecks(message || '');
+    if (!normalizedMessage) return rules[0];
+
+    for (const rule of rules) {
+      const candidates = [
+        rule.name,
+        rule.id,
+        (rule.description || '').slice(0, 64),
+      ]
+        .map((entry) => normalizeTextForChecks(entry || ''))
+        .filter(Boolean);
+      if (candidates.some((candidate) => normalizedMessage.includes(candidate))) {
+        return rule;
+      }
+    }
+    return rules[0];
+  }
+
+  private withFunctionalSuggestion(
+    rules: VisionValidationRule[],
+    message?: string,
+  ) {
+    const baseMessage = normalizeString(message);
+    if (!this.shouldAppendFunctionalSuggestion(baseMessage)) {
+      return baseMessage;
+    }
+
+    const selectedRule = this.pickRuleForFunctionalSuggestion(rules, baseMessage);
+    if (!selectedRule) return baseMessage;
+
+    const signals = this.detectRuleSignalTypes(
+      normalizeTextForChecks(selectedRule.description || ''),
+    );
+    const suggestion = this.buildRuleFunctionalSuggestion(
+      selectedRule,
+      signals,
+      'mismatch',
+    );
+    if (!suggestion) return baseMessage;
+    return baseMessage
+      ? `${baseMessage} Sugerencia funcional: ${suggestion}`
+      : `Sugerencia funcional: ${suggestion}`;
   }
 
   private buildLocalizationPrompt(params: any, rules: VisionValidationRule[]) {
@@ -2527,24 +2676,34 @@ Responde ÚNICAMENTE con JSON en este formato estricto:
         console.error('[CVQA] Rules validation parse error:', responseText);
         return {
           status: 'invalid',
-          message: 'No se pudo analizar la respuesta de validación.',
+          message: this.withFunctionalSuggestion(
+            rules,
+            'No se pudo analizar la respuesta de validacion.',
+          ),
         };
       }
 
       const status = jsonResult?.status === 'valid' ? 'valid' : 'invalid';
       const message = normalizeString(jsonResult?.message);
-      if (status === 'invalid' && this.shouldTreatRulesValidationAsAdvisory(message)) {
+      const enrichedMessage =
+        status === 'invalid'
+          ? this.withFunctionalSuggestion(rules, message)
+          : message;
+      if (
+        status === 'invalid' &&
+        this.shouldTreatRulesValidationAsAdvisory(enrichedMessage)
+      ) {
         return {
           status: 'valid',
-          message: message
-            ? `Recomendación de encuadre/vista (no bloqueante): ${message}`
+          message: enrichedMessage
+            ? `Recomendación de encuadre/vista (no bloqueante): ${enrichedMessage}`
             : 'Recomendación de encuadre/vista (no bloqueante).',
         };
       }
 
       return {
         status,
-        message,
+        message: enrichedMessage,
       };
     } catch (error: any) {
       console.error(
