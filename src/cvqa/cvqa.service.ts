@@ -203,6 +203,7 @@ const STATUS_COLOR_MAP: Record<ValidationStatus, string> = {
 const MIN_RULE_ZONE_COVERAGE_RATIO = 0.3;
 const MIN_RULE_ZONE_AREA_RATIO = 0.2;
 const NEGATIVE_REFERENCE_REVIEW_SIMILARITY = 0.92;
+const FLUSHNESS_DIRECTION_CONFIDENCE_THRESHOLD = 0.92;
 
 const CHECK_TYPE_KEYWORDS: Record<ValidationCheckType, RegExp> = {
   presence:
@@ -1641,6 +1642,10 @@ INSTRUCCIONES DE DECISIÓN:
  - En "reason", explica por qué la regla fue PASS, FAIL o REVIEW. Si es FAIL, justifica el defecto exacto observado.
  - Si no puedes mapear con confianza la zona completa por perspectiva/oclusión/calidad, devuelve REVIEW y explica la causa.
  - Respeta strictnessPercent: 100% = tolerancia mínima; 0% = mayor tolerancia visual.
+ - En reglas de "Condicion superficial" o "Nivel relativo":
+   - Usa "sobresalido" cuando el elemento se vea por encima del plano de referencia.
+   - Usa "hundido" cuando el elemento se vea por debajo/recesado respecto al plano.
+   - Si la direccion no es concluyente, NO inventes; usa "fuera de ras (direccion no concluyente)".
 
 PLAYBOOK GLOBAL POR TIPO DE CHEQUEO:
 ${checkTypePlaybook || '- Usa guías visuales generales y coherentes con la regla estructurada.'}
@@ -1662,6 +1667,83 @@ ${notes ? `- Notas: ${notes}` : ''}
 REGLAS ESTRUCTURADAS:
 ${rulesJson}
 `;
+  }
+
+  private normalizeFlushnessNarrative(
+    rule: VisionValidationRule,
+    status: ValidationStatus,
+    confidence: number | null,
+    reason?: string,
+    observedState?: string,
+  ): { reason?: string; observedState?: string } {
+    if (status !== 'FAIL') {
+      return { reason, observedState };
+    }
+
+    const authoringType = this.toAuthoringCheckType(rule.checkType);
+    if (authoringType !== 'surface_condition') {
+      return { reason, observedState };
+    }
+
+    const combinedText = normalizeTextForChecks(
+      `${reason || ''} ${observedState || ''}`,
+    );
+    const hasProtrudingSignals =
+      /\b(sobresal|sobresale|relieve|por\s+encima|elevad|alto)\b/.test(
+        combinedText,
+      );
+    const hasSunkenSignals =
+      /\b(hundid|hundido|recesad|deprimid|por\s+debajo)\b/.test(
+        combinedText,
+      );
+
+    const inferredDirection = hasProtrudingSignals && !hasSunkenSignals
+      ? 'protruding'
+      : hasSunkenSignals && !hasProtrudingSignals
+        ? 'sunken'
+        : 'unknown';
+
+    const lowConfidenceDirection =
+      confidence == null || confidence < FLUSHNESS_DIRECTION_CONFIDENCE_THRESHOLD;
+
+    let nextObservedState = observedState;
+    let nextReason = reason;
+
+    if (
+      inferredDirection === 'protruding' &&
+      /\bhundid|hundido\b/.test(normalizeTextForChecks(observedState || ''))
+    ) {
+      nextObservedState = 'Elemento fuera de ras: sobresalido.';
+    }
+
+    if (
+      inferredDirection === 'sunken' &&
+      /\bsobresal|sobresale\b/.test(normalizeTextForChecks(observedState || ''))
+    ) {
+      nextObservedState = 'Elemento fuera de ras: hundido.';
+    }
+
+    if (inferredDirection === 'unknown' || lowConfidenceDirection) {
+      nextObservedState =
+        inferredDirection === 'protruding'
+          ? 'Elemento fuera de ras: sobresalido.'
+          : inferredDirection === 'sunken'
+            ? 'Elemento fuera de ras: hundido.'
+            : 'Elemento fuera de ras (direccion no concluyente en esta captura).';
+      const uncertaintyNote =
+        'Direccion de desnivel no concluyente; se recomienda recaptura lateral cercana para confirmar si sobresale o esta hundido.';
+      const hasNoteAlready = normalizeTextForChecks(nextReason || '').includes(
+        normalizeTextForChecks('direccion de desnivel no concluyente'),
+      );
+      if (!hasNoteAlready) {
+        nextReason = [nextReason, uncertaintyNote].filter(Boolean).join(' · ');
+      }
+    }
+
+    return {
+      reason: nextReason,
+      observedState: nextObservedState,
+    };
   }
 
   private getRuleNegativeReferenceMap(
@@ -1808,20 +1890,28 @@ ${rulesJson}
         .join(' · ');
 
       const normalizedConfidence = normalizeScore(raw?.confidence);
+      const confidence =
+        (forceReview ? null : normalizedConfidence) ??
+        (status === 'PASS'
+          ? deriveThresholdsFromStrictness(rule.strictnessPercent).passMin
+          : status === 'FAIL'
+            ? 1
+            : null);
+      const flushnessNarrative = this.normalizeFlushnessNarrative(
+        rule,
+        status,
+        confidence,
+        reason || undefined,
+        normalizeString(raw?.observedState),
+      );
       return {
         ruleId: rule.id,
         name: normalizeString(raw?.name) || rule.name || rule.description,
         status,
-        confidence:
-          (forceReview ? null : normalizedConfidence) ??
-          (status === 'PASS'
-            ? deriveThresholdsFromStrictness(rule.strictnessPercent).passMin
-            : status === 'FAIL'
-              ? 1
-              : null),
-        reason: reason || undefined,
+        confidence,
+        reason: flushnessNarrative.reason || undefined,
         expectedState: normalizeString(raw?.expectedState) || rule.passCriteria,
-        observedState: normalizeString(raw?.observedState),
+        observedState: flushnessNarrative.observedState,
         sourceIndices,
         matchedRuleRegion: normalizedRegions.matchedRuleRegion,
         defectRegion: normalizedRegions.defectRegion,
