@@ -1482,13 +1482,28 @@ export class CvqaService {
       /\b(angulo|vista|frontal|lateral|superior|perspectiva|multiangulo|multivista|viewconstraint|any)\b/.test(
         normalizedMessage,
       );
-    if (!hasAngleOrViewSignals) return false;
 
-    const hasHardInvalidSignals =
-      /\b(contradic|imposibl|ambigu|no\s+observable|incoher|inconsisten|equivocad|vacia|vacio|checktype|tipo\s+de\s+chequeo|descripcion)\b/.test(
+    const hasSharedZoneSignals =
+      /\b(zona|regla)\b.*\b(compart|solap|superpuest|misma\s+zona|incluye)\b|\b(compart|solap|superpuest)\b.*\b(zona|regla)\b/.test(
         normalizedMessage,
       );
-    return !hasHardInvalidSignals;
+
+    const hasGoldenPerspectiveSignals =
+      /\b(golden|referencia|muestra)\b.*\b(frontal|lateral|superior|perspectiva|angulo|vista)\b|\b(frontal|lateral|superior|perspectiva|angulo|vista)\b.*\b(golden|referencia|muestra)\b/.test(
+        normalizedMessage,
+      );
+
+    if (!hasAngleOrViewSignals && !hasSharedZoneSignals && !hasGoldenPerspectiveSignals) {
+      return false;
+    }
+
+    const hasStructuralHardInvalidSignals =
+      /\b(contradic|imposibl|ambigu|no\s+observable|checktype|tipo\s+de\s+chequeo|descripcion|ausencia|presencia)\b/.test(
+        normalizedMessage,
+      );
+
+    if (hasStructuralHardInvalidSignals) return false;
+    return true;
   }
 
   private shouldAppendFunctionalSuggestion(message?: string) {
@@ -2730,6 +2745,8 @@ Verifica si existe alguno de estos problemas:
 3. Reglas con recomendación de multiángulo o vista específica (frontal/lateral/superior) para mejorar robustez.
 4. Zonas marcadas incoherentes con la regla: apuntan al lugar equivocado, están vacías, demasiado amplias o demasiado pequeñas.
 5. La foto base podría no ser ideal por ángulo, resolución, iluminación o encuadre.
+6. Dos o más reglas pueden compartir parcial o totalmente la misma zona marcada; esto es permitido y NO debe invalidar por sí solo.
+7. Si una regla solicita vista lateral/superior/frontal, el golden sample puede estar en otra perspectiva; eso es advertencia no bloqueante.
 
 Para cada regla, revisa que:
 - El checkType esté alineado con el criterio escrito.
@@ -2739,6 +2756,8 @@ Para cada regla, revisa que:
 - El criterio de PASS/FAIL sea medible visualmente y no ambiguo.
 - Prioriza inconsistencias de estructura/descripcion de la regla por encima de recomendaciones de cámara.
 - Si la observación es solo de ángulo o vista, responde status "valid" y deja la recomendación en "message" (no invalides automáticamente).
+- Si dos reglas comparten zona (solapada/superpuesta), manten status "valid" y deja solo recomendación de refinamiento opcional.
+- Si hay diferencia entre viewConstraint de la regla y perspectiva del golden sample, manten status "valid" y agrega advertencia de recaptura sugerida.
 
 Reglas estructuradas:
 ${rulesText}
