@@ -204,6 +204,7 @@ const MIN_RULE_ZONE_COVERAGE_RATIO = 0.3;
 const MIN_RULE_ZONE_AREA_RATIO = 0.2;
 const NEGATIVE_REFERENCE_REVIEW_SIMILARITY = 0.92;
 const FLUSHNESS_DIRECTION_CONFIDENCE_THRESHOLD = 0.92;
+const OVERALL_REVIEW_CONFIDENCE_THRESHOLD = 0.6;
 
 const CHECK_TYPE_KEYWORDS: Record<ValidationCheckType, RegExp> = {
   presence:
@@ -1971,7 +1972,6 @@ ${rulesJson}
     ruleResults: RuleEvaluation[],
     captureQuality: CaptureQualityAssessment,
   ): ValidationStatus {
-    if (captureQuality.status === 'REVIEW') return 'REVIEW';
     const criticalRuleIds = new Set(
       rules.filter((rule) => rule.severity === 'critical').map((rule) => rule.id),
     );
@@ -1985,6 +1985,27 @@ ${rulesJson}
     }
     if (ruleResults.some((result) => result.status === 'FAIL')) return 'FAIL';
     if (ruleResults.some((result) => result.status === 'REVIEW')) return 'REVIEW';
+    const confidenceValues = ruleResults
+      .map((result) => result.confidence)
+      .filter((value): value is number =>
+        typeof value === 'number' && Number.isFinite(value),
+      );
+
+    if (
+      confidenceValues.length === 0 ||
+      confidenceValues.some(
+        (value) => value < OVERALL_REVIEW_CONFIDENCE_THRESHOLD,
+      )
+    ) {
+      return 'REVIEW';
+    }
+
+    if (captureQuality.status === 'REVIEW') {
+      // Capture-quality issues remain informative but should not force REVIEW
+      // when rule outcomes are clearly PASS/FAIL with solid confidence.
+      return 'PASS';
+    }
+
     return 'PASS';
   }
 
@@ -2652,7 +2673,7 @@ ${rulesJson}
       );
       const recommendedAction =
         normalizeString(jsonResult.recommendedAction) ||
-        captureQuality.recommendedAction ||
+        (overallStatus === 'REVIEW' ? captureQuality.recommendedAction : undefined) ||
         (overallStatus === 'REVIEW'
           ? 'Recaptura la evidencia o envía la pieza a revisión humana.'
           : undefined);
